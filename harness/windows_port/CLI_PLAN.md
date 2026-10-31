@@ -62,8 +62,10 @@ configuration. Reject contradictory input forms. All advertised forms must work
 through PowerShell and the Python CLI.
 
 Direct-source mode defaults to `--parts auto`. An explicit positive count chooses
-manual splitting; `--parts 1` requests a single movie and still validates its
-format capacity. Existing profile-only commands retain their current workflow
+manual splitting; `--parts 1` requests a single movie and skips the preliminary
+full-source count when no frame range is selected. The extracted frame count is
+checked against the format limit before codec analysis, and the packer validates
+it again. Existing profile-only commands retain their current workflow
 selection unless the user explicitly selects automatic or manual splitting.
 
 ## 3. Configuration resolution and validation

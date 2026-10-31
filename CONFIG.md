@@ -76,12 +76,16 @@ no added audio gain, and the shared resize/dither/denoise defaults. `--fps` and
 and `--config`, the profile supplies other settings while the explicit source
 owns `source.path`. `--set section.key=TOML_LITERAL` uses TOML scalar/array
 syntax and passes through the same schema validation as profile data. Direct
-input defaults to automatic splitting at no more than 65,535 frames per part;
-manual `--parts N` is checked against the existing format capacity. Suggested
+input defaults to automatic splitting at no more than 65,535 frames per part.
+An explicit `--parts 1` with no frame range skips the preliminary full-source
+frame count; extraction determines the actual count. The encoder checks
+format capacity after extraction, and the packer validates it again. Other
+part counts are checked against the exact count before encoding. Suggested
 starting pairs are 15/380, 24 or 24000/1001 with `2:180,3:230`, and 30 or
 30000/1001 with 200. Treat the latter pairs as candidates for source/playback
-checks, not general hardware qualifications. The frame counter decodes the
-selected source and can take as long as the source itself.
+checks, not general hardware qualifications. Exact counting decodes the
+selected source and can take as long as the source itself, except for the
+explicit single-part full-source case above.
 
 Common named options map to `source.fps` + `encoder.cold_cap`, `video.width`,
 `video.height`, `video.fit`, `source.duration`, `source.start_frame` +
@@ -108,7 +112,7 @@ named option and its `--set` path is an error.
 
 ## Workstation concurrency
 
-直接動画CLIは、320x224、`fit = "pad"`、15 FPS、cold cap 380、`mosaic-gm`、音声ゲインなし、共通のresize/dither/denoise設定を初期値にします。`--fps`と`--cold-cap`は必ず一緒に指定します。`--source`と`--config`を併用すると、profileが他の設定を提供し、指定したsourceが`source.path`を決めます。`--set section.key=TOML_LITERAL`はTOMLのscalar/array構文を使い、profileと同じschema検証を通ります。直接入力はpartあたり最大65,535 frameの自動分割が既定です。`--parts N`で手動指定した場合も既存format上限を検証します。推奨開始候補は15/380、24または24000/1001 FPSと`2:180,3:230`、30または30000/1001 FPSと200です。後者はsourceとplaybackで確認する候補であり、一般的なhardware適合保証ではありません。frame数の正確な計測はsource全体をdecodeする場合があります。
+直接動画CLIは、320x224、`fit = "pad"`、15 FPS、cold cap 380、`mosaic-gm`、音声ゲインなし、共通のresize/dither/denoise設定を初期値にします。`--fps`と`--cold-cap`は必ず一緒に指定します。`--source`と`--config`を併用すると、profileが他の設定を提供し、指定したsourceが`source.path`を決めます。`--set section.key=TOML_LITERAL`はTOMLのscalar/array構文を使い、profileと同じschema検証を通ります。直接入力はpartあたり最大65,535 frameの自動分割が既定です。全sourceに`--parts 1`を指定すると事前frame countを省略し、実際のframe数はextract/packで確定します。frame抽出後にencoderがformat上限を検証し、packerも再検証します。他のpart数はencode前に正確なframe数を数えます。推奨開始候補は15/380、24または24000/1001 FPSと`2:180,3:230`、30または30000/1001 FPSと200です。後者はsourceとplaybackで確認する候補であり、一般的なhardware適合保証ではありません。正確なframe countはsource全体をdecodeする場合がありますが、全sourceに`--parts 1`を指定した場合は省略します。
 
 名前付きoptionは`source.fps` + `encoder.cold_cap`、`video.width`、`video.height`、`video.fit`、`source.duration`、`source.start_frame` + `source.end_frame`、`source.audio_filter`に対応します。繰り返し指定できる`--set`では、共有profile schemaが受け付けるその他のTOML fieldも指定できます。
 

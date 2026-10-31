@@ -388,6 +388,13 @@ verification and extraction, so parallel installs do not share that file.
 Use the resulting toolchain for the commands below; a full player/disc
 qualification is still required for each release.
 
+Run `tools\cavc.ps1` without arguments to list the available modes. Show one
+mode's options, defaults shown beside each parameter, FPS/cold-cap guidance,
+`--set` profile keys, and enum values with
+`tools\cavc.ps1 help convert` (replace `convert` with `encode`, `disc`,
+`multipart`, or `doctor`). Long mode help is paged; press Space for the next
+page, Enter for one line, or `q` to stop.
+
 ```powershell
 .\tools\bootstrap_python.ps1 --cpu
 .\tools\bootstrap_python.ps1 --gpu
@@ -423,9 +430,12 @@ for the full acceptance status.
 
 Direct video input defaults to 15 FPS and cold cap 380. Supply `--fps` and
 `--cold-cap` together to select another timing pair; the CLI never substitutes
-the source frame rate. `--dry-run` probes the source and counts output frames
-without starting encoder or disc stages. Direct input defaults to automatic
-parts, capped at 65,535 frames per part; `--parts N` selects a manual count.
+the source frame rate. `--dry-run` probes the source and normally counts output
+frames without starting encoder or disc stages. With an explicit `--parts 1`
+and no frame range, it skips that full-source count; extraction determines the
+actual frame count. The encoder checks the format limit after extraction, and
+the packer validates it again. Direct input defaults to automatic parts, capped at 65,535 frames per
+part; `--parts N` selects a manual count.
 Parts play in order and pause while the next movie loads. `--set
 section.key=TOML_LITERAL` supplies advanced profile values; quote string values
 as TOML strings. The suggested non-default starting pairs are 24 or 24000/1001
@@ -966,6 +976,8 @@ BIOSをrunごとのprivate system directoryへcopyします。通常の
 
 ## Native Windows CLI
 
+引数なしで`tools\cavc.ps1`を実行するとmode一覧を表示します。`tools\cavc.ps1 help convert`のように指定すると、選んだmodeのoptionと各parameterのdefault（説明の直後）、FPS/cold-capの説明、`--set`で使えるprofile key、enum値をページ表示します。Spaceで次のページ、Enterで1行進み、`q`で終了します。
+
 PowerShellの変換経路はWSL、仮想マシン、Bash、Make、ブラウザー版エンコーダーを使いません。
 WinGetを利用できるx64版Windows 10/11の新規環境では、外部toolと固定版Python managerを次の手順でinstallできます。
 
@@ -1073,8 +1085,9 @@ Gistを明示的に依頼されたときだけ行います。ローカルのタ�
 
 Direct video input は既定で15 FPS、cold cap 380を使います。別のtiming pairを選ぶ場合は
 `--fps`と`--cold-cap`を両方指定してください。source FPSへの自動置換はしません。
-`--dry-run`はsourceをprobeし、frame countまで行いますが、encoder/disc stageは開始しません。
-direct inputの既定は1 partあたり最大65,535 frameのautomatic splitです。`--parts N`で
+`--dry-run`はsourceをprobeし、通常はframe countまで行いますが、encoder/disc stageは開始しません。
+全sourceを対象に`--parts 1`を明示すると、この事前countを省略し、実際のframe数はextractとpackで確定します。
+encode後ではなくframe抽出後にformat上限を検証し、packerも再検証します。direct inputの既定は1 partあたり最大65,535 frameのautomatic splitです。`--parts N`で
 manual countを選べます。partは順番に再生され、次のmovieのload中は一時停止します。
 `--set section.key=TOML_LITERAL`でadvanced profile値を指定できます。stringはTOML stringとして
 quoteしてください。推奨候補は15/380、24または24000/1001 FPSと`2:180,3:230`、

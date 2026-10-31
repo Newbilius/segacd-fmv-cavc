@@ -22,6 +22,13 @@ from quantize_global4_tiles import (
 STL4 = "stl4"
 MOSAIC_GM = "mosaic-gm"
 PALETTE_ALGOS = (STL4, MOSAIC_GM)
+PALETTE_ALIASES = {
+    "stl": STL4,
+    "stl4": STL4,
+    "mosaic": MOSAIC_GM,
+    "mosaic_gm": MOSAIC_GM,
+    "mosaic-gm": MOSAIC_GM,
+}
 
 _KEYS = np.arange(512, dtype=np.uint16)
 _RGB333 = np.stack([
@@ -36,16 +43,9 @@ _RGB333_DISTANCE2 = (
 
 def normalize_palette_algo(value: str | None = None) -> str:
     name = (value or os.environ.get("CBRSIM_PAL_ALGO", STL4)).strip().lower()
-    aliases = {
-        "stl": STL4,
-        "stl4": STL4,
-        "mosaic": MOSAIC_GM,
-        "mosaic_gm": MOSAIC_GM,
-        "mosaic-gm": MOSAIC_GM,
-    }
-    if name not in aliases:
+    if name not in PALETTE_ALIASES:
         raise ValueError(f"unknown palette algorithm {name!r}; choose one of {PALETTE_ALGOS}")
-    return aliases[name]
+    return PALETTE_ALIASES[name]
 
 
 def _counts(keys, weights=None, tile_mask=None, extra_lut=None):

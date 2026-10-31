@@ -40,8 +40,17 @@ $launchArguments += $cliArguments
 $previousDevice = [Environment]::GetEnvironmentVariable('CBRSIM_DEVICE', 'Process')
 try {
     $env:CBRSIM_DEVICE = $device
-    & (Join-Path $root 'tools/python.ps1') @launchArguments
-    $childExitCode = $LASTEXITCODE
+    if ($action -eq 'help' -and $cliArguments.Count -ge 2) {
+        # python.ps1 redirects the native process streams, so Python cannot
+        # detect the interactive console for paging. Let the PowerShell host
+        # page the completed mode help instead.
+        $helpOutput = & (Join-Path $root 'tools/python.ps1') @launchArguments
+        $childExitCode = $LASTEXITCODE
+        $helpOutput | Out-Host -Paging
+    } else {
+        & (Join-Path $root 'tools/python.ps1') @launchArguments
+        $childExitCode = $LASTEXITCODE
+    }
 } finally {
     if ($null -eq $previousDevice) {
         Remove-Item Env:CBRSIM_DEVICE -ErrorAction SilentlyContinue

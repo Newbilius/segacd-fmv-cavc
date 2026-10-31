@@ -1455,6 +1455,12 @@ def main(demoted_fade_anchors=frozenset(), arrays=None):
     _t = _mark("Extract", _t)
     frames = sorted(master_dir.glob("*.png"))
     n = len(frames)
+    if n < 2:
+        raise ValueError("source produced fewer than two output frames")
+    if n > cavc_routing.MAX_FRAMES:
+        raise ValueError(
+            f"{n} frames exceed the player's {cavc_routing.MAX_FRAMES}-frame "
+            "routing table; split or shorten the source")
     if SOURCE_RANGE is not None and n != SOURCE_RANGE[1] - SOURCE_RANGE[0]:
         raise ValueError(f"source range {SOURCE_RANGE} produced only {n} frames")
     wordram_layout = pattern_supply.word_ram_layout(

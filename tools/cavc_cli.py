@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from datetime import datetime, timezone
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import textwrap
 import traceback
 import copy
 import hashlib
@@ -220,6 +223,8 @@ def print_resolved_plan(profile, *, action: str, fps_origin: str,
     print(f"  Cold cap: {profile.data['encoder']['cold_cap']}")
     print(f"  Raster: {video['width']}x{video['height']}; fit={video['fit']}")
     print(f"  Exact output frames: {output_frames if output_frames is not None else 'not counted'}")
+    if output_frames is None and part_count == 1:
+        print("  Frame count: deferred until frame extraction")
     if total_frames is not None and source_bounds is not None:
         print(f"  Full timeline frames: {total_frames}")
     if source_bounds is not None:
@@ -255,41 +260,200 @@ def print_resolved_plan(profile, *, action: str, fps_origin: str,
     print("  Encode runtime estimate: unavailable")
 
 
+MODE_DESCRIPTIONS = {
+    "doctor": "Check Python, FFmpeg, native tools, storage, and CUDA.",
+    "encode": "Encode a video or profile; do not build a disc image.",
+    "disc": "Build a disc image from an existing profile and encoded artifacts.",
+    "convert": "Encode a video or profile, then build its disc image.",
+    "multipart": "Encode or assemble parts from a profile.",
+}
+
+
+def print_mode_list() -> None:
+    print("Sega CD video conversion modes:")
+    for name, description in MODE_DESCRIPTIONS.items():
+        print(f"  {name:<10} {description}")
+    print("\nShow one mode's options and setting values with:")
+    print("  tools\\cavc.ps1 help <mode>")
+    print("\nExamples:")
+    print("  tools\\cavc.ps1 help convert")
+    print("  tools\\cavc.ps1 help multipart")
+
+
+def print_paged(text: str) -> None:
+    """Page long interactive mode help so it remains readable in PowerShell."""
+    if not (sys.stdout.isatty() and sys.stdin.isatty()):
+        sys.stdout.write(text)
+        return
+    lines = text.splitlines(keepends=True)
+    page_size = max(1, shutil.get_terminal_size((100, 24)).lines - 1)
+    offset = 0
+    while offset < len(lines):
+        end = min(offset + page_size, len(lines))
+        sys.stdout.write("".join(lines[offset:end]))
+        sys.stdout.flush()
+        offset = end
+        if offset < len(lines):
+            try:
+                response = input("-- More -- (Enter: next page, q: quit) ")
+            except EOFError:
+                return
+            if response.strip().lower() == "q":
+                return
+
+
+def print_help_entry(prefix: str, value: str, width: int) -> None:
+    print(textwrap.fill(value, width=width, initial_indent=prefix,
+                        subsequent_indent=" " * len(prefix)))
+
+
+def print_profile_reference(width: int) -> None:
+    from comparison_layout import PANEL_CONFIG_KEYS, SLOTS
+    from palette_algorithms import PALETTE_ALIASES
+    from video_geometry import RESIZE_FILTERS
+
+    print("\nValid --set profile keys (enum choices appear beside the key):")
+    nested = {
+        ("source", "preprocess"): (
+            "source.preprocess.auto_range",
+            "source.preprocess.endpoint_snap.black_max",
+            "source.preprocess.endpoint_snap.white_min",
+        ),
+        ("comparison", "panels"): tuple(
+            f"comparison.panels.<name>.{key}"
+            for key in sorted(PANEL_CONFIG_KEYS)),
+    }
+    enum_values = {
+        ("video", "fit"): "pad, crop",
+        ("video", "resize_filter"): ", ".join(sorted(RESIZE_FILTERS)),
+        ("video", "output_dither"): "bayer, edge-attenuated-bayer, none",
+        ("palette", "algorithm"): ", ".join(sorted(PALETTE_ALIASES)),
+    }
+    for section, keys in sorted(encode_config.ALLOWED.items()):
+        paths = []
+        for key in sorted(keys):
+            path_values = nested.get((section, key), (f"{section}.{key}",))
+            for path in path_values:
+                enum = enum_values.get((section, key))
+                if section == "comparison" and key == "panels":
+                    if path.endswith(".slot"):
+                        enum = ", ".join(SLOTS)
+                    elif path.endswith(".resize"):
+                        enum = ", ".join(sorted(RESIZE_FILTERS))
+                paths.append(f"{path} ({enum})" if enum else path)
+        print_help_entry(f"  {section}: ", ", ".join(paths), width)
+    print("  (Use --set section.key=TOML_LITERAL; strings need TOML quotes.)")
+
+
+def print_mode_help(parser: argparse.ArgumentParser, name: str, width: int) -> None:
+    subparsers = next(action for action in parser._actions
+                      if isinstance(action, argparse._SubParsersAction))
+    if name not in MODE_DESCRIPTIONS:
+        print(f"Unknown mode: {name}")
+        print_mode_list()
+        raise SystemExit(2)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        print(f"{name}: {MODE_DESCRIPTIONS[name]}\n")
+        subparsers.choices[name].print_help()
+        if name in {"encode", "convert"}:
+            print("\nFPS and cold-cap:")
+            for detail in (
+                    "--fps RATE selects output cadence; RATE may be rational, such as 24000/1001.",
+                    "--cold-cap VALUE limits cold-pattern work per displayed frame, in patterns.",
+                    "Supply both options together. Direct video defaults to 15 FPS / 380; profile-only input keeps the profile pair unless both are overridden.",
+                    'VALUE may be one positive integer (for example 380) or a cadence map, for example "2:180,3:230" for a 24 FPS 2/3-VBlank cadence.',
+                    "The cap is a per-frame transfer limit, not a memory or whole-movie budget."):
+                print_help_entry("  ", detail, width)
+            print("\nRecommended starting pairs (check each source and playback):")
+            for detail in (
+                    "15 FPS: --fps 15 --cold-cap 380",
+                    '24 FPS: --fps 24 --cold-cap "2:180,3:230"',
+                    "30 FPS: --fps 30 --cold-cap 200"):
+                print_help_entry("  ", detail, width)
+            print("\n`--set` profile keys and enum values:")
+            print_profile_reference(width)
+    print_paged(output.getvalue())
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    if argv is None:
+        argv = sys.argv[1:]
+    terminal_width = max(80, min(shutil.get_terminal_size((100, 24)).columns, 200))
+    formatter = lambda prog: argparse.HelpFormatter(prog, width=terminal_width)
+    parser = argparse.ArgumentParser(
+        description="Convert video sources to Sega CD disc images.",
+        formatter_class=formatter)
     sub = parser.add_subparsers(dest="action", required=True)
-    sub.add_parser("doctor", help="inspect host prerequisites")
+    sub.add_parser("doctor", help=MODE_DESCRIPTIONS["doctor"],
+                   formatter_class=formatter)
     for action in ("encode", "disc", "convert", "multipart"):
-        cmd = sub.add_parser(action)
-        cmd.add_argument("input", type=Path, nargs="?")
-        cmd.add_argument("--source", type=Path)
-        cmd.add_argument("--config", type=Path)
-        cmd.add_argument("--device", choices=("cpu", "auto", "cuda"), default="auto")
-        cmd.add_argument("--debug", action="store_true")
-        cmd.add_argument("--region", choices=("jp", "us"), default="jp")
+        cmd = sub.add_parser(action, help=MODE_DESCRIPTIONS[action],
+                             description=MODE_DESCRIPTIONS[action],
+                             formatter_class=formatter)
+        cmd.add_argument("input", type=Path, nargs="?",
+                         help="TOML profile or supported video source (default: none; an input is required)")
+        cmd.add_argument("--source", type=Path,
+                         help="video source path (default: not supplied)")
+        cmd.add_argument("--config", type=Path,
+                         help="optional TOML profile for --source (default: not supplied)")
+        cmd.add_argument("--device", choices=("cpu", "auto", "cuda"), default="auto",
+                         help="encoder device selection (default: auto)")
+        cmd.add_argument("--debug", action="store_true",
+                         help="build a DEBUG disc image with diagnostics (default: off)")
+        cmd.add_argument("--region", choices=("jp", "us"), default="jp",
+                         help="Sega CD release region (default: jp)")
         if action == "multipart":
-            cmd.add_argument("--parts", type=int)
-            cmd.add_argument("--part", type=int)
-            cmd.add_argument("--build-only", action="store_true")
+            cmd.add_argument("--parts", type=int,
+                             help="override profile part count, 1..64 (default: profile value; must be supplied if absent there)")
+            cmd.add_argument("--part", type=int,
+                             help="encode only this 1-based part number (default: all parts)")
+            cmd.add_argument("--build-only", action="store_true",
+                             help="assemble the disc from completed parts only (default: off)")
         elif action in ("encode", "convert"):
-            cmd.add_argument("--force", action="store_true", help="ignore a matching completed encode")
-            cmd.add_argument("--fps")
-            cmd.add_argument("--cold-cap")
-            cmd.add_argument("--dry-run", action="store_true")
-            cmd.add_argument("--width", type=int)
-            cmd.add_argument("--height", type=int)
-            cmd.add_argument("--fit", choices=("pad", "crop"))
-            cmd.add_argument("--duration")
-            cmd.add_argument("--start-frame", type=int)
-            cmd.add_argument("--end-frame", type=int)
-            cmd.add_argument("--audio-filter")
+            cmd.add_argument("--force", action="store_true",
+                             help="ignore a matching completed encode (default: off)")
+            cmd.add_argument("--fps", metavar="RATE",
+                             help="output frames per second; rational rates accepted (default: 15 for direct video, profile value otherwise)")
+            cmd.add_argument("--cold-cap", metavar="VALUE",
+                             help="per-frame cold-pattern limit; see timing notes below (default: 380 for direct video, profile value otherwise)")
+            cmd.add_argument("--dry-run", action="store_true",
+                             help="show the resolved plan without starting stages (default: off)")
+            cmd.add_argument("--width", type=int,
+                             help="output width in pixels (default: 320 for source-only input, profile value otherwise)")
+            cmd.add_argument("--height", type=int,
+                             help="output height in pixels (default: 224 for source-only input, profile value otherwise)")
+            cmd.add_argument("--fit", choices=("pad", "crop"),
+                             help="preserve the whole source or crop to fill (default: pad for source-only input, profile value otherwise)")
+            cmd.add_argument("--duration",
+                             help="source duration in seconds (default: FFprobe for source-only input; configured profile duration when present)")
+            cmd.add_argument("--start-frame", type=int,
+                             help="inclusive start frame after FPS conversion (default: beginning of source/profile range)")
+            cmd.add_argument("--end-frame", type=int,
+                             help="exclusive end frame after FPS conversion (default: end of source/profile range)")
+            cmd.add_argument("--audio-filter",
+                             help="FFmpeg audio filter chain (default: none for direct source, profile value otherwise)")
             cmd.add_argument("--parts", default=None,
-                             help="automatic (direct video default) or positive part count")
+                             help="auto or integer 1..64 (default: auto for direct video; profile [multipart].parts if set, otherwise single profile)")
             cmd.add_argument("--set", dest="sets", action="append", default=[],
-                             metavar="SECTION.KEY=VALUE")
+                             metavar="SECTION.KEY=VALUE",
+                             help="set an additional profile value using a TOML literal (default: no overrides)")
             cmd.add_argument("--save-config", type=Path,
-                             help="export the resolved profile without overwriting a file")
-            cmd.add_argument("--name", help="safe output identity for direct video input")
+                             help="export the resolved profile without overwriting a file (default: no export)")
+            cmd.add_argument("--name",
+                             help="safe output identity for direct video input (default: derived from input filename)")
+    if not argv:
+        print_mode_list()
+        return 0
+    if argv[0] == "help":
+        if len(argv) == 1:
+            print_mode_list()
+            return 0
+        if len(argv) != 2:
+            print("Usage: tools\\cavc.ps1 help <mode>")
+            return 2
+        print_mode_help(parser, argv[1], terminal_width)
+        return 0
     args = parser.parse_args(argv)
     if args.action in ("encode", "convert") and args.parts is not None:
         if args.parts != "auto":
@@ -491,7 +655,6 @@ def main(argv: list[str] | None = None) -> int:
                 profile_path, {"schema_version": encode_config.SCHEMA_VERSION, **resolved})
         if source_override is not None:
             from source_inspection import probe, source_duration
-            from source_inspection import count_output_frames
             from video_geometry import raw_filter, parse_ratio
             source_info = probe(source_override)
             source_data = copy.deepcopy(profile.data)
@@ -532,48 +695,61 @@ def main(argv: list[str] | None = None) -> int:
                                           snap.get("white_min", 256))
             if prefix:
                 count_filter = f"{prefix},{count_filter}"
-            source_total_frames = count_output_frames(
-                str(source_override), str(source_data["source"]["fps"]),
-                duration=str(source_data["source"]["duration"]),
-                video_filter=count_filter)
-            raw_count_filter = geometry.get("raw_filter") or raw_filter(
-                int(geometry["width"]), int(geometry["height"]),
-                source_info["display_width"], source_info["display_height"],
-                src_sar_num=sar_num, src_sar_den=sar_den,
-                fit=geometry.get("fit", "pad"),
-                resize_filter=geometry.get("resize_filter", "lanczos"))
-            if prefix:
-                raw_count_filter = f"{prefix},{raw_count_filter}"
-            raw_total_frames = (count_output_frames(
-                str(source_override), str(source_data["source"]["fps"]),
-                duration=str(source_data["source"]["duration"]),
-                video_filter=raw_count_filter)
-                if geometry.get("master_filter") or geometry.get("raw_filter")
-                else source_total_frames)
-            if raw_total_frames != source_total_frames:
-                raise ValueError(
-                    "master and raw video filters produce different frame counts "
-                    f"({source_total_frames} vs {raw_total_frames}); align their timing")
             source_bounds = (source_data["source"].get("start_frame"),
                              source_data["source"].get("end_frame"))
-            if source_bounds[0] is None:
-                output_frames = source_total_frames
-            else:
-                if source_bounds[1] > source_total_frames:
-                    raise ValueError("source frame range exceeds exact output frame count")
-                output_frames = source_bounds[1] - source_bounds[0]
             selected_parts = getattr(args, "parts", None)
             if selected_parts is None:
                 selected_parts = source_data.get("multipart", {}).get("parts")
             if selected_parts is None:
                 selected_parts = "auto"
             from multipart import automatic_part_count, split_frames
-            part_count = (automatic_part_count(output_frames)
-                          if selected_parts == "auto" else int(selected_parts))
-            if part_count > encode_config.MAX_MULTIPART_PARTS or output_frames > part_count * 83520:
-                raise ValueError("selected part count cannot hold the exact output frame count")
-            split_frames(output_frames, part_count,
-                         source_bounds[0] or 0)
+            part_count = None
+            if selected_parts == "auto":
+                requested_part_count = None
+            else:
+                requested_part_count = int(selected_parts)
+            defer_frame_count = (requested_part_count == 1 and
+                                 source_bounds[0] is None)
+            if defer_frame_count:
+                part_count = 1
+            else:
+                from source_inspection import count_output_frames
+                source_total_frames = count_output_frames(
+                    str(source_override), str(source_data["source"]["fps"]),
+                    duration=str(source_data["source"]["duration"]),
+                    video_filter=count_filter)
+                raw_count_filter = geometry.get("raw_filter") or raw_filter(
+                    int(geometry["width"]), int(geometry["height"]),
+                    source_info["display_width"], source_info["display_height"],
+                    src_sar_num=sar_num, src_sar_den=sar_den,
+                    fit=geometry.get("fit", "pad"),
+                    resize_filter=geometry.get("resize_filter", "lanczos"))
+                if prefix:
+                    raw_count_filter = f"{prefix},{raw_count_filter}"
+                raw_total_frames = (count_output_frames(
+                    str(source_override), str(source_data["source"]["fps"]),
+                    duration=str(source_data["source"]["duration"]),
+                    video_filter=raw_count_filter)
+                    if geometry.get("master_filter") or geometry.get("raw_filter")
+                    else source_total_frames)
+                if raw_total_frames != source_total_frames:
+                    raise ValueError(
+                        "master and raw video filters produce different frame counts "
+                        f"({source_total_frames} vs {raw_total_frames}); align their timing")
+                if source_bounds[0] is None:
+                    output_frames = source_total_frames
+                else:
+                    if source_bounds[1] > source_total_frames:
+                        raise ValueError("source frame range exceeds exact output frame count")
+                    output_frames = source_bounds[1] - source_bounds[0]
+                part_count = (automatic_part_count(output_frames)
+                              if requested_part_count is None else requested_part_count)
+                if output_frames > part_count * 83520:
+                    raise ValueError("selected part count cannot hold the exact output frame count")
+                split_frames(output_frames, part_count,
+                             source_bounds[0] or 0)
+            if not 1 <= part_count <= encode_config.MAX_MULTIPART_PARTS:
+                raise ValueError("selected part count must be within 1..64")
             source_bytes = source_byte_identity(source_override)
             if part_count > 1:
                 source_data["multipart"] = {"parts": part_count}
@@ -697,37 +873,45 @@ def main(argv: list[str] | None = None) -> int:
         if prefix:
             master_filter = f"{prefix},{master_filter}"
             raw_frame_filter = f"{prefix},{raw_frame_filter}"
-        source_total_frames = count_output_frames(
-            str(profile_path), str(fps), duration=str(duration), video_filter=master_filter)
-        raw_total_frames = (count_output_frames(
-            str(profile_path), str(fps), duration=str(duration), video_filter=raw_frame_filter)
-            if data["video"].get("master_filter") or data["video"].get("raw_filter")
-            else source_total_frames)
-        if raw_total_frames != source_total_frames:
-            raise ValueError(
-                "master and raw video filters produce different frame counts "
-                f"({source_total_frames} vs {raw_total_frames}); align their timing")
-        if args.start_frame is None:
-            output_frames = source_total_frames
-        else:
-            if args.end_frame > source_total_frames:
-                raise ValueError("source frame range exceeds exact output frame count")
-            output_frames = args.end_frame - args.start_frame
         part_option = args.parts
         if part_option is None:
             part_option = data.get("multipart", {}).get("parts")
         if part_option is None:
             part_option = "auto"
         if part_option == "auto":
-            part_count = automatic_part_count(output_frames)
+            requested_part_count = None
         else:
             try:
-                part_count = int(part_option)
+                requested_part_count = int(part_option)
             except ValueError as exc:
                 raise ValueError("--parts must be 'auto' or a positive integer") from exc
+        defer_frame_count = (requested_part_count == 1 and args.start_frame is None)
+        if defer_frame_count:
+            part_count = 1
+        else:
+            source_total_frames = count_output_frames(
+                str(profile_path), str(fps), duration=str(duration),
+                video_filter=master_filter)
+            raw_total_frames = (count_output_frames(
+                str(profile_path), str(fps), duration=str(duration),
+                video_filter=raw_frame_filter)
+                if data["video"].get("master_filter") or data["video"].get("raw_filter")
+                else source_total_frames)
+            if raw_total_frames != source_total_frames:
+                raise ValueError(
+                    "master and raw video filters produce different frame counts "
+                    f"({source_total_frames} vs {raw_total_frames}); align their timing")
+            if args.start_frame is None:
+                output_frames = source_total_frames
+            else:
+                if args.end_frame > source_total_frames:
+                    raise ValueError("source frame range exceeds exact output frame count")
+                output_frames = args.end_frame - args.start_frame
+            part_count = (automatic_part_count(output_frames)
+                          if requested_part_count is None else requested_part_count)
         if not 1 <= part_count <= encode_config.MAX_MULTIPART_PARTS:
             raise ValueError(f"resolved part count {part_count} exceeds 1..{encode_config.MAX_MULTIPART_PARTS}")
-        if output_frames > part_count * 83520:
+        if output_frames is not None and output_frames > part_count * 83520:
             raise ValueError(f"{output_frames} frames exceed the selected {part_count}-part format capacity")
         if part_count > 1:
             data["multipart"] = {"parts": part_count}
@@ -735,7 +919,8 @@ def main(argv: list[str] | None = None) -> int:
         from multipart import split_frames
         source_bounds_for_plan = (data["source"].get("start_frame") or 0,
                                   data["source"].get("end_frame"))
-        split_frames(output_frames, part_count, source_bounds_for_plan[0])
+        if output_frames is not None:
+            split_frames(output_frames, part_count, source_bounds_for_plan[0])
         source_bytes = source_byte_identity(profile_path)
         identity_data = {
             "source": source_bytes,
@@ -765,7 +950,10 @@ def main(argv: list[str] | None = None) -> int:
             if args.name:
                 deferred_profile_write = True
             else:
-                write_profile_atomic(internal_path, toml_text(data))
+                write_profile_atomic(
+                    internal_path,
+                    toml_text({"schema_version": encode_config.SCHEMA_VERSION,
+                               **data}))
                 profile = encode_config.load_profile(internal_path)
     if (profile_path.suffix.lower() == ".toml" and source_override is None
             and args.action in ("encode", "convert")):
@@ -774,28 +962,36 @@ def main(argv: list[str] | None = None) -> int:
         if requested_parts is not None:
             from multipart import automatic_part_count, count_frames
             from source_range import frame_range
-            source_total_frames = count_frames(profile, profile.artifact_stem)
             bounds = frame_range(profile.data["source"])
-            output_frames = (source_total_frames if bounds is None else
-                             bounds[1] - bounds[0])
             if requested_parts == "auto":
-                profile_multipart_parts = automatic_part_count(output_frames)
+                requested_part_count = None
             else:
                 try:
-                    profile_multipart_parts = int(requested_parts)
+                    requested_part_count = int(requested_parts)
                 except (TypeError, ValueError) as exc:
                     raise ValueError("--parts must be 'auto' or a positive integer") from exc
+            defer_frame_count = (requested_part_count == 1 and bounds is None)
+            if defer_frame_count:
+                profile_multipart_parts = 1
+            else:
+                source_total_frames = count_frames(profile, profile.artifact_stem)
+                output_frames = (source_total_frames if bounds is None else
+                                 bounds[1] - bounds[0])
+                profile_multipart_parts = (
+                    automatic_part_count(output_frames)
+                    if requested_part_count is None else requested_part_count)
             if not 1 <= profile_multipart_parts <= encode_config.MAX_MULTIPART_PARTS:
                 raise ValueError(
                     f"resolved part count {profile_multipart_parts} exceeds "
                     f"1..{encode_config.MAX_MULTIPART_PARTS}")
-            if output_frames > profile_multipart_parts * 83520:
+            if output_frames is not None and output_frames > profile_multipart_parts * 83520:
                 raise ValueError(
                     f"{output_frames} frames exceed the selected "
                     f"{profile_multipart_parts}-part format capacity")
-            from multipart import split_frames
-            split_frames(output_frames, profile_multipart_parts,
-                         bounds[0] if bounds is not None else 0)
+            if output_frames is not None:
+                from multipart import split_frames
+                split_frames(output_frames, profile_multipart_parts,
+                             bounds[0] if bounds is not None else 0)
             if getattr(args, "save_config", None) is not None:
                 export_data = copy.deepcopy(profile.data)
                 if profile_multipart_parts > 1:

@@ -113,6 +113,11 @@ LAYOUTS = {
     "three": ("main", "right_top", "right_bottom"),
 }
 SLOTS = tuple(sorted({slot for slots in LAYOUTS.values() for slot in slots}))
+PANEL_CONFIG_KEYS = frozenset({
+    "label", "short_label", "slot", "aperture", "pixel_aspect", "spec",
+    "placeholder", "path", "crop", "pad", "input_fps", "resize",
+    "fmv_start", "lead",
+})
 
 
 @dataclass(frozen=True)
@@ -455,9 +460,7 @@ def load(profile_path: Path | str) -> Comparison:
         raise ValueError(f"{profile.path}: [comparison.panels] must have "
                          f"at least one panel table")
 
-    allowed = {"label", "short_label", "slot", "aperture", "pixel_aspect",
-               "spec", "placeholder", "path", "crop", "pad", "input_fps",
-               "resize", "fmv_start", "lead"}
+    allowed = PANEL_CONFIG_KEYS
     panels: list[Panel] = []
     for key, table in raw_panels.items():
         if not isinstance(table, dict):
