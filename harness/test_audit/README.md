@@ -44,6 +44,7 @@ promise; they are not ordinary unit tests.
 | Multipart | `harness/multipart/README.md` | Sub-second range tests; explicit existing-ISO emulator tier checks independent parts, every displayed pixel, EOF and loop without re-encoding. |
 | Full Sonic planning comparison | `webenc/harness/planning/README.md` | Explicit opt-in; complete 2,714-frame native/browser encodes on common normalized inputs, packed bytes, every replay frame and PCM. Tens of minutes. |
 | Storage | `tools/python.sh harness/runtime_storage/smoke.py` | Real paths, subprocess locks, leases, mapped values and cleanup; seconds. |
+| Native Windows port | `tools/python.ps1 -m unittest discover -s harness/windows_port -p test_*.py`; `tools/test_python_args.ps1`; `harness/windows_port/assemble_extension.py`; isolated-GPU `harness/windows_port/cuda_smoke.py` | Checks lock release, mapped-array lifetime, ISO output with the independent reader, stage output and PID/start/end/exit receipts, launcher device selection, child argv (quotes, spaces, empty args and trailing backslashes), CLI-over-environment runtime precedence, child temp-path propagation, caller-environment isolation, bootstrap `UV_PROJECT_ENVIRONMENT` isolation in Windows CI, exit status/streams/UTF-8, direct CLI child UTF-8 defaults, native m68k assembly/linking through Unicode paths, and actual CUDA kernel/synchronization/host transfer. CUDA smoke requires NVIDIA hardware. `measure_windows_run.ps1` and `measure_gpu.ps1` are opt-in long-run resource samplers, not routine tests. |
 | Log compaction | `bash harness/gpgx_logvdp/test_compact_log.sh` | Real byte-preserving archive; seconds. |
 | Browser algorithms | `npm run test:sites`, `test:audio`, `test:temporal`, `test:admission`, `test:kernel`, `test:schedule` in `webenc/` | Actual worker/kernel/scheduler contracts; no source-movie encode. Kernel uses its native reference. |
 | Browser UI | `npm run test:cold-cap` and `npm run test:ui` | Needs Playwright and a local server via WEBENC_URL; no full encode in UI suite. |
@@ -80,7 +81,7 @@ is not proof of correct encoding; the full output comparison is a separate check
 
 ## Completed qualification
 
-The inventory accounts for 221 test/diagnostic entrypoints and support files.
+The inventory accounts for 236 test/diagnostic entrypoints and support files.
 The candidate list records 177 deletion/consolidation decisions with their
 replacement or accepted loss; removed Python test methods were checked against
 that list for omissions.

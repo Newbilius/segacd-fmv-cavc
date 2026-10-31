@@ -44,6 +44,21 @@ algorithm = "mosaic-gm"
 
 
 class EncodeProfileArtifactTests(unittest.TestCase):
+    def test_output_dir_uses_selected_runtime_device(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.mp4"
+            source.write_bytes(b"source fixture")
+            path = Path(tmp) / "profile.toml"
+            path.write_text(PROFILE.replace("assets/source.mp4", source.as_posix()))
+            profile = load_profile(path)
+            with patch.dict(os.environ, {
+                    "CAVC_WORKSPACE_ROOT": tmp,
+                    "CBRSIM_DEVICE": "auto"}, clear=False):
+                default_dir = profile.output_dir
+                with patch.dict(os.environ, {"CBRSIM_DEVICE": "cpu"}):
+                    cpu_dir = profile.output_dir
+            self.assertNotEqual(default_dir, cpu_dir)
+
     def test_removed_schema_v4_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "old-schema.toml"

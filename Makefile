@@ -43,25 +43,8 @@ MOVIEPLAY_DISC := $(MOVIEPLAY_TMP_DIR)/disc
 DEBUG ?= 0
 # リリースディスクは _release を付けて、同じ packed stream から作った
 # DEBUG ディスクと出力先で衝突させない。
-DISC_SUFFIX := $(if $(filter 1,$(DEBUG)),,_release)
 # jp keeps the plain name, so every existing recording, burn and release path
 # stays valid; another region gets its own disc rather than overwriting it.
-REGION_SUFFIX := $(if $(filter jp,$(SECURITY_REGION)),,_$(SECURITY_REGION))
-MOVIEPLAY_ISO := $(OUT_DIR)/$(CONFIG_STEM)$(REGION_SUFFIX)$(DISC_SUFFIX).iso
-MOVIEPLAY_CUE := $(OUT_DIR)/$(CONFIG_STEM)$(REGION_SUFFIX)$(DISC_SUFFIX).cue
-MOVIEPACK_OUTPUTS := \
-	$(MOVIEPLAY_STREAM_DIR)/HEADER.DAT \
-	$(MOVIEPLAY_STREAM_DIR)/BODY.DAT \
-	$(MOVIEPLAY_STREAM_DIR)/MOVIE.DAT \
-	$(MOVIEPLAY_STREAM_DIR)/paltab.bin \
-	$(MOVIEPLAY_STREAM_DIR)/palidx.bin
-PLAYER_CONSTANTS := $(MOVIEPLAY_STREAM_DIR)/player_constants.inc
-SP_EXTENSION_OBJ := $(MOVIEPLAY_BUILD_DIR)/movieplay_sp_ext.o
-SP_EXTENSION_BIN := $(MOVIEPLAY_BUILD_DIR)/movieplay_sp_ext.bin
-SP_EXTENSION_CONSTANTS := $(MOVIEPLAY_BUILD_DIR)/sp_extension.inc
-MOVIEPLAY_SECURITY := $(MOVIEPLAY_BUILD_DIR)/security.bin
-MOVIEPLAY_REGION_INC := $(MOVIEPLAY_BUILD_DIR)/disc_region.inc
-MOVIEPLAY_DEBUG_FONT := $(MOVIEPLAY_BUILD_DIR)/dbgfont.bin
 
 MARSDEV ?= $(HOME)/toolchains/mars
 M68K_PREFIX ?= $(MARSDEV)/m68k-elf/bin/m68k-elf-
@@ -76,7 +59,7 @@ ASFLAGS := -m68000 --register-prefix-optional --bitwise-or
 CFLAGS_M68K := -m68000 -ffreestanding -fno-builtin -fomit-frame-pointer -O2 -Wall -Wextra
 LDFLAGS := -nostdlib --oformat binary
 
-.PHONY: all disc setup movieplay-setup clean check-tools test1m cdcbench fontbench still256 movieplay movieplay-internal moviepack dmabench cpuvrambench streamtest pcmtest adpcmtest upscaletest asictest prgtest movieplay-force
+.PHONY: all disc setup movieplay-setup clean check-tools check-player-tools test1m cdcbench fontbench still256 movieplay movieplay-internal movieplay-module moviepack dmabench cpuvrambench streamtest pcmtest adpcmtest upscaletest asictest prgtest
 
 all: disc
 
@@ -100,6 +83,12 @@ check-tools:
 	@test -x "$(LD)" || (echo "missing linker: $(LD). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -x "$(OBJCOPY)" || (echo "missing objcopy: $(OBJCOPY). Set MARSDEV=/path/to/mars or M68K_PREFIX=m68k-elf-" && exit 1)
 	@test -n "$(MKISOFS)" || (echo "missing mkisofs/genisoimage" && exit 1)
+
+check-player-tools:
+	@test -x "$(PYTHON)" || (echo "missing project Python launcher: $(PYTHON)" && exit 1)
+	@test -x "$(AS)" || (echo "missing assembler: $(AS)" && exit 1)
+	@test -x "$(LD)" || (echo "missing linker: $(LD)" && exit 1)
+	@test -x "$(OBJCOPY)" || (echo "missing objcopy: $(OBJCOPY)" && exit 1)
 
 $(BOOT_DIR)/security.bin: $(BOOT_DIR)/sec_$(SECURITY_REGION).bin
 	@cp $< $@
@@ -299,127 +288,40 @@ $(OUT_DIR)/CPUVRAMBENCH_$(CPUVRAMBENCH_TAG).cue: $(OUT_DIR)/CPUVRAMBENCH_$(CPUVR
 
 # --- Phase B2: 差分ストリーム再生(単バッファ, BODY.DAT を連続供給) ---
 
-movieplay-internal: check-tools $(MOVIEPLAY_ISO) $(MOVIEPLAY_CUE)
-
-.PHONY: movieplay-module
-movieplay-module: check-tools $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.bin $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.bin
-
-# A disc build must never trust stream files left by another stream layout,
-# profile, or decision log.  Pack from the authenticated current decisions on
-# every build, removing the complete old set first so a failed pack cannot fall
-# through to a stale disc.
-moviepack: check-tools $(SP_EXTENSION_BIN) | movieplay-setup
-	@rm -f $(MOVIEPACK_OUTPUTS) $(PLAYER_CONSTANTS)
-	$(PYTHON) tools/pack_stream.py --config "$(CONFIG)" \
-		--sp-extension "$(SP_EXTENSION_BIN)" --verify
-
-$(MOVIEPACK_OUTPUTS): moviepack
-	@test -f $@
-
 ISO_HOLD_N ?= 0
-# Diagnostic-only continuous-read qualification for the reclaimed resident-SP
-# tail. The diagnostic relocates two pending destinations above PrgBuf and
-# rejects streams that could need the normal third destination, leaving the
-# complete 0x7400..0x7FFF interval marker-owned.
 ISO_VERIFY_SP_TAIL ?= 0
-# Main-CPU straight-line bitmap handlers. Full-playback validation is
-# complete; MAIN_CODEGEN=0 keeps
-# the byte-identical reference player available for fallback/A-B diagnostics.
 MAIN_CODEGEN ?= 1
-# Bind player hot constants to this profile's HEADER.DAT.  Set to 0 only for
-# the generic runtime-header reference player used in A/B diagnostics.
 PLAYER_SPECIALIZE ?= 1
 MULTIPART ?= 0
 ifeq ($(MULTIPART),1)
 ifneq ($(PLAYER_SPECIALIZE),1)
 $(error multipart requires PLAYER_SPECIALIZE=1)
 endif
-ASFLAGS += --defsym MULTIPART=1
 endif
-# DEBUG changes assembler flags without changing a source timestamp. Force this
-# small object to rebuild so `make disc DEBUG=1` can never reuse a release object
-# (or vice versa).
-movieplay-force:
 
-$(PLAYER_CONSTANTS): $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT tools/player_constants.py tools/cavc_routing.py tools/ima_adpcm.py | movieplay-setup
-	$(PYTHON) tools/player_constants.py $< --output $@
+MOVIEPLAY_BUILD_OPTIONS = --region "$(SECURITY_REGION)" \
+	$(if $(filter 1,$(DEBUG)),--debug) \
+	$(if $(filter 0,$(MAIN_CODEGEN)),--no-main-codegen) \
+	$(if $(filter 0,$(PLAYER_SPECIALIZE)),--generic-player) \
+	$(if $(filter-out 0,$(ISO_HOLD_N)),--iso-hold-n $(ISO_HOLD_N)) \
+	$(if $(filter 1,$(ISO_VERIFY_SP_TAIL)),--verify-sp-tail) \
+	$(if $(filter 1,$(MULTIPART)),--multipart)
 
-$(SP_EXTENSION_OBJ): $(BOOT_DIR)/movieplay_sp_ext.s $(CFG_DIR)/sp_ext.ld tools/av_config.py tools/ima_adpcm.py movieplay-force | movieplay-setup
-	$(AS) $(ASFLAGS) $(if $(filter 1,$(ISO_VERIFY_SP_TAIL)),--defsym ISO_VERIFY_SP_TAIL=1) -I$(BOOT_DIR) $< -o $@
+# The Python builder is the single movie pack/player/boot/ISO implementation
+# used by both native Windows CLI and the compatible Linux Make entry points.
+movieplay-internal: check-player-tools
+	$(PYTHON) tools/build_disc.py "$(CONFIG)" $(MOVIEPLAY_BUILD_OPTIONS)
 
-$(SP_EXTENSION_BIN): $(SP_EXTENSION_OBJ)
-	$(LD) $(LDFLAGS) -T $(CFG_DIR)/sp_ext.ld -o $@ $<
+.PHONY: movieplay-module
+movieplay-module: check-player-tools
+	$(PYTHON) tools/build_disc.py "$(CONFIG)" $(MOVIEPLAY_BUILD_OPTIONS) --module-only
 
-$(SP_EXTENSION_CONSTANTS): $(SP_EXTENSION_BIN) tools/sp_extension.py tools/av_config.py | movieplay-setup
-	$(PYTHON) tools/sp_extension.py $< --output $@
-
-# Both region inputs are copied on every build.  Switching SECURITY_REGION
-# changes which source file is read without making the copy older than it, so
-# a timestamp rule would leave the previous region's security code and header
-# fields in place and the mismatch would only show up on the console.
-$(MOVIEPLAY_SECURITY): $(BOOT_DIR)/sec_$(SECURITY_REGION).bin movieplay-force | movieplay-setup
-	cp $< $@
-
-$(MOVIEPLAY_REGION_INC): $(BOOT_DIR)/region_$(SECURITY_REGION).inc movieplay-force | movieplay-setup
-	cp $< $@
-
-$(MOVIEPLAY_DEBUG_FONT): tools/gen_debugfont.py | movieplay-setup
-	$(PYTHON) tools/gen_debugfont.py --output $@
-
-$(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o: $(BOOT_DIR)/movieplay_ip.s $(MOVIEPLAY_SECURITY) $(MOVIEPLAY_REGION_INC) $(MOVIEPLAY_STREAM_DIR)/paltab.bin $(MOVIEPLAY_STREAM_DIR)/palidx.bin $(PLAYER_CONSTANTS) $(SP_EXTENSION_CONSTANTS) $(MOVIEPLAY_DEBUG_FONT) tools/av_config.py tools/cavc_routing.py tools/ima_adpcm.py tools/sp_extension.py tools/check_player_ring.py $(CONFIG) movieplay-force | movieplay-setup
-	$(PYTHON) tools/check_player_ring.py --constants $(PLAYER_CONSTANTS) --extension $(SP_EXTENSION_BIN) --extension-constants $(SP_EXTENSION_CONSTANTS) $(if $(filter 1,$(ISO_VERIFY_SP_TAIL)),--sp-tail-marker)
-	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter 1,$(MAIN_CODEGEN)),--defsym MAIN_CODEGEN=1) $(if $(filter 1,$(PLAYER_SPECIALIZE)),--defsym PLAYER_SPECIALIZED=1) -I$(MOVIEPLAY_BUILD_DIR) -I$(MOVIEPLAY_STREAM_DIR) -I$(BOOT_DIR) $< -o $@
-
-$(BOOT_DIR)/dbgfont.bin: tools/gen_debugfont.py
-	$(PYTHON) tools/gen_debugfont.py
-
-$(MOVIEPLAY_BUILD_DIR)/movieplay_ip.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.o
-	$(LD) $(LDFLAGS) -T $(CFG_DIR)/ip.ld -o $@ $<
-	@bytes=$$(wc -c < $@); \
-		if [ "$$bytes" -gt 18944 ]; then \
-			echo "ERROR: $@ is $$bytes bytes; transient Main IP data must end before 0xFF4A00" >&2; \
-			rm -f $@; \
-			exit 1; \
-		fi
-
-$(MOVIEPLAY_BUILD_DIR)/movieplay_sp.o: $(BOOT_DIR)/movieplay_sp.s $(PLAYER_CONSTANTS) $(SP_EXTENSION_CONSTANTS) tools/av_config.py tools/cavc_routing.py tools/ima_adpcm.py tools/sp_extension.py tools/check_player_ring.py harness/pcm_write_pacing/check_pacing.py $(CONFIG) movieplay-force | movieplay-setup
-	$(PYTHON) tools/check_player_ring.py --constants $(PLAYER_CONSTANTS) --extension $(SP_EXTENSION_BIN) --extension-constants $(SP_EXTENSION_CONSTANTS) $(if $(filter 1,$(ISO_VERIFY_SP_TAIL)),--sp-tail-marker)
-	$(PYTHON) harness/pcm_write_pacing/check_pacing.py
-	$(if $(filter 1,$(ISO_VERIFY_SP_TAIL)),$(PYTHON) harness/sp_tail_marker/verify_profile.py --header $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT --max-pending-sectors 2)
-	$(AS) $(ASFLAGS) $(if $(filter 1,$(DEBUG)),--defsym DEBUG=1) $(if $(filter-out 0,$(ISO_HOLD_N)),--defsym ISO_HOLD_N=$(ISO_HOLD_N)) $(if $(filter 1,$(ISO_VERIFY_SP_TAIL)),--defsym ISO_VERIFY_SP_TAIL=1) $(if $(filter 1,$(PLAYER_SPECIALIZE)),--defsym PLAYER_SPECIALIZED=1) -I$(MOVIEPLAY_STREAM_DIR) -I$(MOVIEPLAY_BUILD_DIR) -I$(BOOT_DIR) $< -o $@
-
-$(MOVIEPLAY_BUILD_DIR)/movieplay_sp.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.o
-	$(LD) $(LDFLAGS) -T $(CFG_DIR)/sp.ld -o $@ $<
-	@bytes=$$(wc -c < $@); \
-		limit=5120; \
-		if [ "$$bytes" -gt "$$limit" ]; then \
-			echo "ERROR: $@ is $$bytes bytes; this build reserves $$limit bytes for SP" >&2; \
-			rm -f $@; \
-			exit 1; \
-		fi
-
-$(MOVIEPLAY_BUILD_DIR)/movieplay_boot.bin: $(MOVIEPLAY_BUILD_DIR)/movieplay_ip.bin $(MOVIEPLAY_BUILD_DIR)/movieplay_sp.bin $(BOOT_DIR)/movieplay_boot.s $(MOVIEPLAY_REGION_INC)
-	$(AS) $(ASFLAGS) -I$(MOVIEPLAY_BUILD_DIR) -I$(BOOT_DIR) $(BOOT_DIR)/movieplay_boot.s -o $(MOVIEPLAY_BUILD_DIR)/movieplay_boot.out
-	$(OBJCOPY) -O binary $(MOVIEPLAY_BUILD_DIR)/movieplay_boot.out $@
-	@bytes=$$(wc -c < $@); \
-		if [ "$$bytes" -ne 32768 ]; then \
-			echo "ERROR: $@ is $$bytes bytes; the complete boot image must be 32768 bytes" >&2; \
-			rm -f $@; \
-			exit 1; \
-		fi
-
-$(MOVIEPLAY_ISO): $(MOVIEPLAY_BUILD_DIR)/movieplay_boot.bin $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT $(MOVIEPLAY_STREAM_DIR)/BODY.DAT | movieplay-setup
-	@mkdir -p $(MOVIEPLAY_DISC)
-	@printf "delta stream phase B2\n" > $(MOVIEPLAY_DISC)/README.TXT
-	@rm -f $(MOVIEPLAY_DISC)/MOVIE.DAT $(MOVIEPLAY_DISC)/HEADER.DAT $(MOVIEPLAY_DISC)/BODY.DAT
-	cp $(MOVIEPLAY_STREAM_DIR)/HEADER.DAT $(MOVIEPLAY_DISC)/HEADER.DAT
-	cp $(MOVIEPLAY_STREAM_DIR)/BODY.DAT $(MOVIEPLAY_DISC)/BODY.DAT
-	@rm -f $@ $(MOVIEPLAY_CUE)
-	$(MKISOFS) -iso-level 1 -G $< -pad -V "SCFMV_DLT" -o $@ $(MOVIEPLAY_DISC)
-
-$(MOVIEPLAY_CUE): $(MOVIEPLAY_ISO)
-	@rm -f $@
-	@printf 'FILE "$(notdir $(MOVIEPLAY_ISO))" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n' > $@
+# A disc build must never trust stream files left by another stream layout,
+# profile, or decision log.  Pack from the authenticated current decisions on
+# every build, removing the complete old set first so a failed pack cannot fall
+# through to a stale disc.
+moviepack: check-player-tools
+	$(PYTHON) tools/build_disc.py "$(CONFIG)" $(MOVIEPLAY_BUILD_OPTIONS) --pack-only
 
 # --- Continuous-stream self-test (standalone, IP+SP only, STREAM.DAT on disc) ---
 # NOTE: STREAM_FRAMES / STREAM_FRAME_SECTORS must match NUM_FRAMES / FRAME_SECTORS

@@ -12,7 +12,6 @@ from dataclasses import dataclass
 import argparse
 from contextlib import contextmanager
 import ctypes
-import fcntl
 import hashlib
 import json
 import os
@@ -25,6 +24,7 @@ import time
 import uuid
 
 from runtime_paths import DEFAULT_WORKSPACE, workspace_root
+from file_lock import open_locked, close_locked
 
 
 DEFAULT_ROOT = DEFAULT_WORKSPACE
@@ -98,13 +98,11 @@ def ensure_root(root: Path | None = None) -> Path:
 def _workspace_lock(root: Path):
     """Serialize eviction, allocation, lease publication, and alias changes."""
 
-    descriptor = os.open(
-        root / ".workspace.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    descriptor = open_locked(root / ".workspace.lock")
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
-        os.close(descriptor)
+        close_locked(descriptor)
 
 
 def _slug(value: str, limit: int = 72) -> str:
@@ -119,9 +117,55 @@ def _entry_key(kind: str, key: str) -> str:
     return f"{_slug(kind, 20)}-{_slug(key, 180)}-{digest}"
 
 
-def _pid_alive(pid: int) -> bool:
+def _windows_process_token(pid: int) -> int | None:
+    from ctypes import wintypes
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME))
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    process = kernel32.OpenProcess(0x1000, False, pid)
+    if not process:
+        return None
+    try:
+        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+        if not kernel32.GetProcessTimes(process, ctypes.byref(created),
+                                        ctypes.byref(exited), ctypes.byref(kernel),
+                                        ctypes.byref(user)):
+            return None
+        return (created.dwHighDateTime << 32) | created.dwLowDateTime
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def _pid_alive(pid: int, expected_token: int | None = None) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        process = kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not process:
+            return ctypes.get_last_error() == 5  # access denied means it exists
+        try:
+            if expected_token is not None:
+                if _windows_process_token(pid) != expected_token:
+                    return False
+            code = wintypes.DWORD()
+            return bool(kernel32.GetExitCodeProcess(process, ctypes.byref(code)) and code.value == 259)
+        finally:
+            kernel32.CloseHandle(process)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -137,11 +181,14 @@ def _lease_records(root: Path) -> list[tuple[Path, dict]]:
         try:
             record = json.loads(marker.read_text(encoding="utf-8"))
             pid = int(record.get("pid", 0))
+            process_token = record.get("process_token")
+            if process_token is not None:
+                process_token = int(process_token)
             entry = Path(record["entry"]).resolve()
         except (OSError, ValueError, KeyError, json.JSONDecodeError):
             marker.unlink(missing_ok=True)
             continue
-        if not _pid_alive(pid):
+        if not _pid_alive(pid, process_token):
             marker.unlink(missing_ok=True)
             continue
         record["entry"] = str(entry)
@@ -350,6 +397,8 @@ def _acquire_lease_locked(
     temporary = marker.with_suffix(".tmp")
     temporary.write_text(json.dumps({
         "pid": os.getpid(),
+        "process_token": (_windows_process_token(os.getpid())
+                           if os.name == "nt" else None),
         "entry": str(entry),
         "created_ns": time.time_ns(),
         "required_bytes": max(0, int(required_bytes)),

@@ -8,10 +8,22 @@ from __future__ import annotations
 
 import tempfile
 import weakref
+import gc
 
 import numpy as np
 
 from runtime_paths import array_storage, scratch_root
+
+
+def _remove_array_file(path, mapping):
+    # weakref.finalize runs before the dead memmap releases its attributes.
+    # At this point its views are gone, so close the underlying handle first.
+    mapping.close()
+    path.unlink(missing_ok=True)
+    try:
+        path.parent.rmdir()
+    except OSError:
+        pass
 
 
 class ArrayStorage:
@@ -34,7 +46,9 @@ class ArrayStorage:
         from pathlib import Path
         path = Path(self._directory.name) / f"array-{len(self._arrays)}.bin"
         array = np.memmap(path, mode="w+", shape=shape, dtype=dtype)
-        # Do not keep an otherwise dead stage cache alive through this owner.
+        # Windows cannot unlink an open mapping. Remove its file as soon as
+        # the last array/view releases the mapping, even after stack unwinding.
+        weakref.finalize(array, _remove_array_file, path, array._mmap)
         self._arrays.append(weakref.ref(array))
         return array
 
@@ -43,16 +57,23 @@ class ArrayStorage:
         import mmap
         for reference in self._arrays:
             array = reference()
-            if array is not None:
-                array.flush()
-                if hasattr(array._mmap, "madvise") and hasattr(mmap, "MADV_DONTNEED"):
-                    try:
-                        array._mmap.madvise(mmap.MADV_DONTNEED)
-                    except OSError:
-                        pass  # Reclaim is optional; flushed values remain valid.
+            if array is None:
+                continue
+            array.flush()
+            if hasattr(array._mmap, "madvise") and hasattr(mmap, "MADV_DONTNEED"):
+                try:
+                    array._mmap.madvise(mmap.MADV_DONTNEED)
+                except OSError:
+                    pass  # Reclaim is optional; flushed values remain valid.
 
     def __exit__(self, *_exc):
-        # No forced mmap.close(): views may outlive the owner during unwinding.
-        # Unix removes the names immediately and frees bytes after the last view.
         if self._directory is not None:
-            self._directory.cleanup()
+            self.settle()
+            self._arrays.clear()
+            gc.collect()
+            try:
+                self._directory.cleanup()
+            except PermissionError:
+                # A traceback or an escaping view still owns a mapping. The
+                # finalizer above removes the file when that mapping is freed.
+                pass

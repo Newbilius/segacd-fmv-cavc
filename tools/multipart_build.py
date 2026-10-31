@@ -12,6 +12,7 @@ import ima_adpcm
 import player_constants
 import sp_extension
 from multipart import ROOT, digest, run_logged, stem_lock, write_json
+import iso9660
 
 IP_BYTES = 0x5000
 WORD_BYTES = 0x2000
@@ -190,10 +191,10 @@ def build(plan, profiles, records, *, debug, region):
         module = ROOT/profile.build_dir
         module.mkdir(parents=True, exist_ok=True)
         (module/"multipart_player.inc").write_text(f".equ MULTIPART_RETURN_ENTRY, {reentry}\n")
-        with stem_lock(profile.sim_stem):
-            run_logged(["make", "movieplay-module", f"CONFIG={profile.path}",
-                        f"DEBUG={int(debug)}", "MULTIPART=1", f"SECURITY_REGION={region}",
-                        "--assume-old=moviepack"], f"{plan['stem']}-part{number:03}-player")
+        with stem_lock(profile.lock_stems):
+            import build_disc
+            build_disc.build(profile.path, debug=debug, region=region, pack=False,
+                             module_only=True, multipart=True)
         folder = ROOT/profile.artifact_dir
         expected = sp_extension.adpcm_preload_image(
             ima_adpcm.full_tables(), (module/"movieplay_sp_ext.bin").read_bytes())
@@ -236,14 +237,10 @@ def build(plan, profiles, records, *, debug, region):
             raise ValueError(f"resident stub {first} exceeds its checked memory: {length}/{capacity}")
     shutil.copyfile(directory/"multipart_ip.bin", staged/"PARTIP.BIN")
     shutil.copyfile(directory/"loader_word.bin", staged/"PARTSP.BIN")
-    iso_tool = shutil.which("mkisofs") or shutil.which("genisoimage")
-    if not iso_tool:
-        raise FileNotFoundError("mkisofs/genisoimage is required")
     suffix = ("" if region == "jp" else "_us") + ("" if debug else "_release")
     iso = ROOT/"out"/f"{plan['stem']}{suffix}.iso"
     pending = work/"multipart.pending.iso"
-    run_logged([iso_tool, "-iso-level", "1", "-G", directory/"multipart_boot.bin",
-                "-pad", "-V", "CAVC_MULTIPART", "-o", pending, staged], plan["stem"]+"-iso")
+    iso9660.write_iso(pending, directory/"multipart_boot.bin", staged, "CAVC_MULTIPART")
     verify_iso(pending, staged)
     os.replace(pending, iso)
     cue = iso.with_suffix(".cue")

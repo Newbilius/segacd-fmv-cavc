@@ -25,7 +25,7 @@ IP = ROOT / "boot/movieplay_ip.s"
 BOOT = ROOT / "boot/movieplay_boot.s"
 SP_LD = ROOT / "cfg/sp.ld"
 SP_EXT_LD = ROOT / "cfg/sp_ext.ld"
-MAKEFILE = ROOT / "Makefile"
+BUILD_DISC = ROOT / "tools/build_disc.py"
 QUALIFIED_ADPCM_BOOT_COPY_BYTES = 0x58
 QUALIFIED_ADPCM_BOOT_COPY_SHA256 = (
     "8bca1932c1351273279a3329519a4051e5796749b05b43be911e3247af79d925"
@@ -33,13 +33,13 @@ QUALIFIED_ADPCM_BOOT_COPY_SHA256 = (
 SP_TAIL_MARKER_ADPCM_BOOT_COPY_SHA256 = (
     "d68bf023717f28c36134c48c339e786f87259f0a7c3a70bb0604780eade8d862"
 )
-sp_text = SP.read_text()
-sp_ext_text = SP_EXT.read_text()
-ip_text = IP.read_text()
-boot_text = BOOT.read_text()
-sp_ld_text = SP_LD.read_text()
-sp_ext_ld_text = SP_EXT_LD.read_text()
-make_text = MAKEFILE.read_text()
+sp_text = SP.read_text(encoding="utf-8")
+sp_ext_text = SP_EXT.read_text(encoding="utf-8")
+ip_text = IP.read_text(encoding="utf-8")
+boot_text = BOOT.read_text(encoding="utf-8")
+sp_ld_text = SP_LD.read_text(encoding="utf-8")
+sp_ext_ld_text = SP_EXT_LD.read_text(encoding="utf-8")
+build_disc_text = BUILD_DISC.read_text(encoding="utf-8")
 
 
 def equ(source: str, name: str, path: Path) -> int:
@@ -86,11 +86,11 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
-pc_text = args.constants.read_text() if args.constants else ""
+pc_text = args.constants.read_text(encoding="utf-8") if args.constants else ""
 extension_bytes = args.extension.read_bytes()
 extension_values = sp_extension.metadata(extension_bytes)
 extension_include_values = sp_extension.parse_include(
-    args.extension_constants.read_text())
+    args.extension_constants.read_text(encoding="utf-8"))
 if extension_include_values != extension_values:
     sys.exit(
         "check_player_ring: Sub extension constants do not match the linked "
@@ -746,18 +746,13 @@ for token in (
         sys.exit(
             f"check_player_ring: inline Sub diagnostic is missing {token!r}")
 require(
-    make_text,
-    rf'limit={av_config.SUB_BOOT_IMAGE_MAX_BYTES};',
+    build_disc_text,
+    rf'if sp_bin\.stat\(\)\.st_size > av_config\.SUB_BOOT_IMAGE_MAX_BYTES:',
     "resident Sub image-size limit",
 )
 require(
-    make_text,
-    r'if \[ "\$\$bytes" -gt "\$\$limit" \]; then',
-    "resident Sub image-size comparison",
-)
-require(
-    make_text,
-    r'--sp-extension "\$\(SP_EXTENSION_BIN\)" --verify',
+    build_disc_text,
+    r'"--sp-extension", str\(ext_bin\), "--verify"',
     "Sub extension HEADER preload pack argument",
 )
 

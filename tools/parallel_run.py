@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from encode_config import EncodeProfile, load_profile  # noqa: E402
 import resource_tokens  # noqa: E402
 import tmpfs_workspace  # noqa: E402
+import process_tree  # noqa: E402
 
 
 STAGES = ("sim", "disc", "record", "hud")
@@ -44,10 +45,39 @@ STAGES = ("sim", "disc", "record", "hud")
 RECORD_MARGIN_SECONDS = 30
 
 _PRINT_LOCK = threading.Lock()
+_PROCESS_LOCK = threading.Lock()
+_ACTIVE_PROCESSES: set[subprocess.Popen] = set()
+_CANCEL = threading.Event()
 
 
 class ParallelRunError(RuntimeError):
     pass
+
+
+def _spawn_owned(command, **options):
+    """Start and register one task-owned process tree."""
+    with _PROCESS_LOCK:
+        if _CANCEL.is_set():
+            raise ParallelRunError("parallel run was cancelled")
+        process = process_tree.popen(command, **options)
+        _ACTIVE_PROCESSES.add(process)
+        return process
+
+
+def _release_owned(process) -> None:
+    with _PROCESS_LOCK:
+        _ACTIVE_PROCESSES.discard(process)
+
+
+def _terminate_tree(process) -> None:
+    process_tree.terminate(process)
+
+
+def _terminate_active_processes() -> None:
+    with _PROCESS_LOCK:
+        processes = tuple(_ACTIVE_PROCESSES)
+    for process in processes:
+        _terminate_tree(process)
 
 
 @dataclass(frozen=True)
@@ -74,6 +104,7 @@ class JobResult:
 
 def validate_distinct_stems(profiles: list[EncodeProfile]) -> None:
     stems: dict[str, Path] = {}
+    output_paths: dict[str, Path] = {}
     for profile in profiles:
         if profile.sim_stem in stems:
             raise ParallelRunError(
@@ -81,6 +112,12 @@ def validate_distinct_stems(profiles: list[EncodeProfile]) -> None:
                 f"{stems[profile.sim_stem]} / {profile.path} -> "
                 f"{profile.sim_stem}")
         stems[profile.sim_stem] = profile.path
+        output_key = profile.output_lock_stem
+        if output_key in output_paths:
+            raise ParallelRunError(
+                "profiles resolve to the same case-normalized output path "
+                f"and cannot run together: {output_paths[output_key]} / {profile.path}")
+        output_paths[output_key] = profile.path
 
 
 def _profile_output_dir(profile: EncodeProfile) -> Path:
@@ -116,21 +153,29 @@ def stage_commands(
 
     through_index = STAGES.index(through)
     commands: list[tuple[str, list[str]]] = []
-    python = str(ROOT / "tools" / "python.sh")
-    if through_index >= STAGES.index("sim"):
-        sim_command = [python]
+    if os.name == "nt":
+        python = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                  "-File", str(ROOT/"tools/python.ps1")]
         if use_gpu:
-            sim_command.append("--gpu")
+            python.append("--gpu")
+    else:
+        python = [str(ROOT / "tools" / "python.sh")]
+    if through_index >= STAGES.index("sim"):
+        sim_command = list(python)
         sim_command.extend([
             str(ROOT / "tools" / "sim.py"),
             str(profile.path),
         ])
         commands.append(("sim", sim_command))
     if through_index >= STAGES.index("disc"):
-        commands.append(("disc", [
-            "make", "disc", f"CONFIG={profile.path}", "DEBUG=1",
-            f"PYTHON={python}",
-        ]))
+        if os.name == "nt":
+            commands.append(("disc", [*python, str(ROOT/"tools/build_disc.py"),
+                                       str(profile.path), "--debug"]))
+        else:
+            commands.append(("disc", [
+                "make", "disc", f"CONFIG={profile.path}", "DEBUG=1",
+                f"PYTHON={python[0]}",
+            ]))
     stem = profile.sim_stem
     if through_index >= STAGES.index("record"):
         commands.append(("record", [
@@ -180,14 +225,20 @@ def _run_logged(
 ) -> int:
     log.write(f"$ {' '.join(command)}\n")
     log.flush()
-    return subprocess.run(
-        command,
-        cwd=ROOT,
-        env=env,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        check=False,
-    ).returncode
+    process = _spawn_owned(command, cwd=ROOT, env=env, stdout=log,
+                           stderr=subprocess.STDOUT)
+    started_at = datetime.now().astimezone().isoformat()
+    log.write(f"# pid={process.pid} started_at={started_at}\n")
+    log.flush()
+    try:
+        status = process.wait()
+        return status
+    finally:
+        log.write(
+            f"# ended_at={datetime.now().astimezone().isoformat()} "
+            f"exit_code={process.poll()}\n")
+        log.flush()
+        _release_owned(process)
 
 
 def _run_sim_with_handoff(
@@ -203,37 +254,45 @@ def _run_sim_with_handoff(
     sim_env["SEGACD_TMPFS_HANDOFF"] = str(handoff)
     log.write(f"$ {' '.join(command)}\n")
     log.flush()
-    process = subprocess.Popen(
-        command,
-        cwd=ROOT,
-        env=sim_env,
-        stdout=log,
-        stderr=subprocess.STDOUT,
-    )
+    process = _spawn_owned(command, cwd=ROOT, env=sim_env, stdout=log,
+                           stderr=subprocess.STDOUT)
+    started_at = datetime.now().astimezone().isoformat()
+    log.write(f"# pid={process.pid} started_at={started_at}\n")
+    log.flush()
     lease = None
     acknowledged = False
     ready = handoff / "ready.json"
-    while process.poll() is None:
-        if ready.is_file() and not acknowledged:
+    try:
+        while process.poll() is None:
+            if ready.is_file() and not acknowledged:
+                output_dir = _profile_output_dir(profile)
+                lease = tmpfs_workspace.lease_managed_path(output_dir)
+                if lease is None:
+                    _terminate_tree(process)
+                    process.wait()
+                    raise ParallelRunError(
+                        f"sim tmpfs handoff did not resolve {output_dir}")
+                (handoff / "ack").write_text("pinned\n", encoding="utf-8")
+                acknowledged = True
+            time.sleep(0.05)
+        status = process.wait()
+        if ready.is_file() and not acknowledged and status == 0:
             output_dir = _profile_output_dir(profile)
             lease = tmpfs_workspace.lease_managed_path(output_dir)
             if lease is None:
-                process.terminate()
-                process.wait()
                 raise ParallelRunError(
                     f"sim tmpfs handoff did not resolve {output_dir}")
             (handoff / "ack").write_text("pinned\n", encoding="utf-8")
-            acknowledged = True
-        time.sleep(0.05)
-    status = process.wait()
-    if ready.is_file() and not acknowledged and status == 0:
-        output_dir = _profile_output_dir(profile)
-        lease = tmpfs_workspace.lease_managed_path(output_dir)
-        if lease is None:
-            raise ParallelRunError(
-                f"sim tmpfs handoff did not resolve {output_dir}")
-        (handoff / "ack").write_text("pinned\n", encoding="utf-8")
-    return status, lease
+        return status, lease
+    finally:
+        if process.poll() is None:
+            _terminate_tree(process)
+            process.wait()
+        log.write(
+            f"# ended_at={datetime.now().astimezone().isoformat()} "
+            f"exit_code={process.poll()}\n")
+        log.flush()
+        _release_owned(process)
 
 
 def _run_job(
@@ -242,7 +301,10 @@ def _run_job(
     options: JobOptions,
 ) -> JobResult:
     if options.stagger_seconds > 0 and index > 0:
-        time.sleep(options.stagger_seconds * index)
+        if _CANCEL.wait(options.stagger_seconds * index):
+            return JobResult(profile.path, profile.sim_stem, "CANCELLED", "",
+                             0.0, options.run_dir / f"{index:02d}-{profile.artifact_stem}.log",
+                             "parallel run interrupted before launch")
     started = time.monotonic()
     log_path = options.run_dir / f"{index:02d}-{profile.artifact_stem}.log"
     failed_stage = ""
@@ -251,14 +313,16 @@ def _run_job(
     record_lease = None
     record_dir = None
     try:
-        stem_lease = resource_tokens.acquire_stem(profile.sim_stem)
+        lock_stems = profile.lock_stems
+        stem_lease = resource_tokens.acquire_stems(lock_stems)
     except resource_tokens.ResourceBusyError as exc:
         return JobResult(
             profile.path, profile.sim_stem, "FAIL", "lock",
             time.monotonic() - started, log_path, str(exc))
 
-    env = resource_tokens.held_stem_environment(profile.sim_stem)
+    env = resource_tokens.held_stems_environment(lock_stems)
     env["CBRSIM_WORKERS"] = str(options.workers)
+    env["CBRSIM_DEVICE"] = "cuda" if options.use_gpu else "cpu"
     if not options.use_gpu:
         env["CBRSIM_GPU"] = "0"
     if options.force_reencode:
@@ -272,6 +336,8 @@ def _run_job(
                 use_gpu=options.use_gpu,
                 record_seconds=options.record_seconds,
             ):
+                if _CANCEL.is_set():
+                    raise ParallelRunError("parallel run interrupted")
                 failed_stage = stage
                 command = (
                     _hud_command(
@@ -337,7 +403,8 @@ def _run_job(
             sim_lease.release()
         stem_lease.release()
 
-    status = "PASS" if not failed_stage and not message else "FAIL"
+    status = ("CANCELLED" if _CANCEL.is_set() else
+              "PASS" if not failed_stage and not message else "FAIL")
     return JobResult(
         profile.path,
         profile.sim_stem,
@@ -374,7 +441,8 @@ def _write_summary(path: Path, results: list[JobResult]) -> None:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("profiles", nargs="+", type=Path)
-    parser.add_argument("--through", choices=STAGES, default="hud")
+    parser.add_argument("--through", choices=STAGES,
+                        default="disc" if os.name == "nt" else "hud")
     parser.add_argument("--jobs", type=int)
     parser.add_argument("--sequential", action="store_true")
     parser.add_argument("--workers-per-job", type=int)
@@ -385,6 +453,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--summary", type=Path)
     args = parser.parse_args()
+    if os.name == "nt" and STAGES.index(args.through) > STAGES.index("disc"):
+        parser.error("Windows parallel runs currently support stages through disc; recording/HUD require the Linux emulator harness")
     if args.jobs is not None and args.jobs <= 0:
         parser.error("--jobs must be positive")
     if args.workers_per_job is not None and args.workers_per_job <= 0:
@@ -450,14 +520,38 @@ def main() -> int:
         f"EMU={resource_tokens.resource_capacity('emu')} "
         f"through={args.through}")
 
+    _CANCEL.clear()
     results: list[JobResult] = []
+    interrupted = False
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_run_job, index, profile, options): index
+            executor.submit(_run_job, index, profile, options): (index, profile)
             for index, profile in enumerate(profiles)
         }
-        for future in as_completed(futures):
-            results.append(future.result())
+        collected = set()
+        try:
+            for future in as_completed(futures):
+                results.append(future.result())
+                collected.add(future)
+        except KeyboardInterrupt:
+            interrupted = True
+            _CANCEL.set()
+            _terminate_active_processes()
+            for future in futures:
+                future.cancel()
+            for future, (index, profile) in futures.items():
+                if future in collected:
+                    continue
+                if future.cancelled():
+                    result = JobResult(
+                        profile.path, profile.sim_stem, "CANCELLED", "",
+                        0.0,
+                        run_dir / f"{index:02d}-{profile.artifact_stem}.log",
+                        "parallel run interrupted before launch",
+                    )
+                else:
+                    result = future.result()
+                results.append(result)
     order = {profile.path: index for index, profile in enumerate(profiles)}
     results.sort(key=lambda result: order[result.profile])
     _write_summary(summary, results)
@@ -466,6 +560,8 @@ def main() -> int:
             f"{result.status}\t{result.profile.name}\t"
             f"{result.elapsed_seconds:.1f}s\t{result.message}")
     _say(f"summary: {summary}")
+    if interrupted:
+        return 130
     return 0 if all(result.status == "PASS" for result in results) else 1
 
 

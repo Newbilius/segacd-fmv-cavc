@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Cross-process resource tokens and profile-stem exclusion.
 
-The locks are ordinary Unix ``flock`` locks. Python callers use
-``acquire_tokens`` / ``acquire_stem`` and shell callers use the ``run`` /
+Locks use the native cross-process file-lock primitive on each supported host.
+Python callers use
+``acquire_tokens`` / ``acquire_stem`` / ``acquire_stems`` and shell callers use the ``run`` /
 ``run-stem`` subcommands.  Locks disappear automatically when their owning
 process exits, including abnormal exits.
 """
@@ -10,7 +11,6 @@ process exits, including abnormal exits.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +20,7 @@ import subprocess
 import time
 from typing import Iterable
 from runtime_paths import workspace_root
+from file_lock import open_locked, close_locked
 
 
 HELD_STEMS_ENV = "SEGACD_HELD_STEM_LOCKS"
@@ -106,16 +107,7 @@ def _resource_dir(resource: str, root: Path) -> Path:
 
 
 def _open_locked(path: Path, *, blocking: bool) -> int | None:
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-    flags = fcntl.LOCK_EX
-    if not blocking:
-        flags |= fcntl.LOCK_NB
-    try:
-        fcntl.flock(descriptor, flags)
-    except BlockingIOError:
-        os.close(descriptor)
-        return None
-    return descriptor
+    return open_locked(path, blocking=blocking)
 
 
 def _try_lock_all_slots(directory: Path, capacity: int) -> list[int] | None:
@@ -125,7 +117,7 @@ def _try_lock_all_slots(directory: Path, capacity: int) -> list[int] | None:
             directory / f"slot-{index:04d}.lock", blocking=False)
         if descriptor is None:
             for held in descriptors:
-                os.close(held)
+                close_locked(held)
             return None
         descriptors.append(descriptor)
     return descriptors
@@ -151,7 +143,7 @@ def _ensure_capacity(directory: Path, capacity: int) -> None:
                     f"resource capacity changed while tokens are active: "
                     f"{previous} -> {capacity} ({directory.name})")
             for descriptor in descriptors:
-                os.close(descriptor)
+                close_locked(descriptor)
         temporary = directory / f"capacity.{os.getpid()}.tmp"
         temporary.write_text(
             json.dumps({"capacity": capacity}, sort_keys=True) + "\n",
@@ -159,7 +151,7 @@ def _ensure_capacity(directory: Path, capacity: int) -> None:
         )
         os.replace(temporary, meta_path)
     finally:
-        os.close(meta_lock)
+        close_locked(meta_lock)
 
 
 class TokenLease:
@@ -182,9 +174,26 @@ class TokenLease:
 
     def release(self) -> None:
         while self._descriptors:
-            os.close(self._descriptors.pop())
+            close_locked(self._descriptors.pop())
 
     def __enter__(self) -> "TokenLease":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.release()
+
+
+class TokenLeaseGroup:
+    """A set of stem locks acquired in stable order and released together."""
+
+    def __init__(self, leases: Iterable[TokenLease]):
+        self._leases = list(leases)
+
+    def release(self) -> None:
+        while self._leases:
+            self._leases.pop().release()
+
+    def __enter__(self) -> "TokenLeaseGroup":
         return self
 
     def __exit__(self, _exc_type, _exc, _traceback) -> None:
@@ -223,7 +232,7 @@ def acquire_tokens(
                 if len(descriptors) == count:
                     return TokenLease(resource, capacity, descriptors)
         for descriptor in descriptors:
-            os.close(descriptor)
+            close_locked(descriptor)
         if not wait:
             raise ResourceBusyError(
                 f"resource busy: {resource} needs {count}/{capacity} tokens")
@@ -245,12 +254,18 @@ def _held_stem_ids() -> set[str]:
 
 
 def held_stem_environment(stem: str, env: dict[str, str] | None = None) -> dict[str, str]:
+    return held_stems_environment((stem,), env)
+
+
+def held_stems_environment(
+    stems: Iterable[str], env: dict[str, str] | None = None,
+) -> dict[str, str]:
     result = dict(os.environ if env is None else env)
     held = {
         value for value in result.get(HELD_STEMS_ENV, "").split(",")
         if value
     }
-    held.add(stem_lock_id(stem))
+    held.update(stem_lock_id(stem) for stem in stems)
     result[HELD_STEMS_ENV] = ",".join(sorted(held))
     return result
 
@@ -269,6 +284,29 @@ def acquire_stem(
             f"stem:{stem}", 1, reentrant=True)
     return acquire_tokens(
         f"stem:{stem}", count=1, capacity=1, wait=wait, root=root)
+
+
+def acquire_stems(
+    stems: Iterable[str],
+    *,
+    wait: bool = False,
+    root: Path | None = None,
+) -> TokenLeaseGroup:
+    """Acquire profile locks in stable order and release partial sets on error.
+
+    This avoids deadlocks between callers that need the same set in different
+    orders and prevents callers from retaining only part of a profile identity.
+    """
+    unique = {stem_lock_id(stem): stem for stem in stems}
+    leases: list[TokenLease] = []
+    try:
+        for identifier in sorted(unique):
+            leases.append(acquire_stem(unique[identifier], wait=wait, root=root))
+    except BaseException:
+        for lease in reversed(leases):
+            lease.release()
+        raise
+    return TokenLeaseGroup(leases)
 
 
 def _profile_stem(config: Path) -> str:

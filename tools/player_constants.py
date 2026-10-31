@@ -437,7 +437,7 @@ def generate_include(header_path: Path, output_path: Path) -> PlayerConstants:
         sector = src.read(SECTOR)
     constants = parse_header_sector(sector)
     rendered = render_include(constants)
-    if not output_path.exists() or output_path.read_text() != rendered:
+    if not output_path.exists() or output_path.read_text(encoding="utf-8") != rendered:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(rendered)
     return constants

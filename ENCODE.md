@@ -116,6 +116,109 @@ HEADER/BODY/MOVIE byte, every canonical RGB frame and reconstructed PCM matched.
 `webenc/harness/planning/README.md` records the intermediate measurements,
 stage variation, environment and reproduction procedure.
 
+### Native Windows full-source sample
+
+This is a host-specific qualification sample, not a cross-platform reference:
+the generated flat-color 16,384-frame source is 320x224 at 24 fps, uses
+mosaic-gm and cold cap 210, and ran on Windows 10 (build 19045) with an i7-9700 and RTX 5060
+Ti. Array storage was disk-backed for CPU/CUDA and memory-backed for the third
+run. Stage times are one run each; the second CUDA column is a fresh resource
+measurement rerun:
+
+| Stage | CPU, disk | CPU, memory | CUDA, disk | CUDA, rerun |
+|---|---:|---:|---:|---:|
+| Extract | 29.9 s | 29.1 s | 29.9 s | 29.2 s |
+| Palette | 123.3 s | 109.9 s | 133.4 s | 119.1 s |
+| Quantize | 364.0 s | 357.3 s | 235.3 s | 218.4 s |
+| Forecast | 135.4 s | 134.2 s | 132.5 s | 132.8 s |
+| Decide | 1,045.9 s | 1,027.3 s | 975.2 s | 972.0 s |
+| Finalize | 0.8 s | 0.8 s | 0.8 s | 0.8 s |
+| **Total** | **1,699.3 s** | **1,658.6 s** | **1,507.1 s** | **1,472.4 s** |
+
+All saved CPU/CUDA decisions, traces, palettes, masks and audio matched. The
+memory-backed CPU result also matched disk-backed CPU. Decide remains CPU work,
+so CUDA is not a GPU-only encode. The fresh CUDA rerun matched the earlier CUDA
+output across all saved decisions, numeric traces, palettes, masks and audio;
+comparison normalized only profile-file and source-path provenance.
+
+The five-second process-tree sample measured a 5.34 GiB summed Working Set
+peak and a 1.53 GiB summed `Get-Process.PrivateMemorySize64` peak. Thirty-second
+directory samples measured 4.80 GiB peak scratch and 87.7 MiB peak workspace.
+Five-second `nvidia-smi` samples measured 1,162 MiB device-wide GPU use; idle
+use after the run was 756 MiB, so this is not process-attributed memory. These
+sampled peaks can miss brief spikes. The earlier 7.38 GiB value used
+`Win32_Process.PrivatePageCount`, not Private Bytes.
+
+All five packed outputs also match the recorded Linux 8cc7bea hashes, though
+the documented Linux and Windows MP4 source hashes differ and the Linux input
+is not available here. This does not establish a strict same-normalized-input
+comparison. Broader source/profile coverage remains open; see
+`harness/windows_port/README.md`.
+
+### Native Windows real-source profile sample
+
+The repository's Tears of Steel profile was run against the first 116.564 s of
+the official [Blender 720p source](https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov)
+(SHA-256 `efa9062d9cdb7a338e40ad530dfdf234806743f29ae6a1a136b97ece4e588e8f`).
+Blender identifies the film as CC BY 3.0 on its [project page](https://mango.blender.org/about/).
+The profile settings were preserved: 320x168, 24 fps, mosaic-gm, cold caps
+`2:180,3:230`, and its mono audio filter. The 2,798-frame CUDA encode ran in a
+fresh isolated pinned GPU environment on the Windows 10 / RTX 5060 Ti host.
+
+| Stage | 15 fps, stl4 | 24 fps, mosaic-gm | 30 fps, mosaic-gm | 30000/1001 fps, mosaic-gm |
+|---|---:|---:|---:|---:|
+| Extract | 10.0 s | 16.8 s | 16.7 s | 16.7 s |
+| Palette | 47.5 s | 39.0 s | 35.5 s | 34.8 s |
+| Quantize | 65.2 s | 134.8 s | 140.0 s | 142.9 s |
+| Forecast | 19.4 s | 29.4 s | 33.1 s | 33.1 s |
+| Decide | 102.5 s | 228.2 s | 292.5 s | 293.0 s |
+| Finalize | 8.2 s | 10.1 s | 9.2 s | 8.5 s |
+| **Total stage time** | **252.8 s** | **458.2 s** | **526.9 s** | **529.0 s** |
+
+Palette training selected three segments; fade-in and horizontal scroll were
+detected. WordBuf remained enabled through the full preload/refill proof. The
+normal packer verified all 2,798 display slots, pattern transfers, audio chunk
+order, routes and WordBuf deadlines. Native Main/Sub/boot assembly and the
+independent ISO reader produced a verified JP release ISO/CUE in 73.4 s; the
+ISO is 18,671,616 bytes. Its SHA-256 is
+`2f956affbd553b82a0c9f7ce412304a36b72d2b14fdad4d8417fa624dc4bc1be`.
+
+A second profile variant used the same source clip at 15 fps with the `stl4`
+palette and cold cap 480. Its 1,749-frame encode completed in 255.5 s CLI wall
+time, and the 15-fps package also passed full display, pattern-transfer,
+WordBuf, audio, cadence and physical-slot verification. Native player assembly
+and independent ISO verification completed in 37.3 s. The 18,636,800-byte ISO
+and its CUE are preserved under
+`tmp/windows-qual-tears-of-steel-stl4-15/`; its SHA-256 is
+`ca86601dccf63671855800f4c1a7da097f415c905fa7d40879e99eda9dc7e530`.
+A third real-source variant used 30 fps, mosaic-gm and cold cap 210. Its 3,498
+frames completed in 529.6 s CLI wall time (526.9 s stage time). Packing
+verified all display slots, pattern transfers, audio chunks, cadence routes
+and WordBuf deadlines; native player assembly and independent ISO verification
+completed in 99.4 s. Its 18,692,096-byte ISO/CUE are preserved under
+`tmp/windows-qual-tears-of-steel-30fps/`; SHA-256 is
+`2f109ff954cd7e2d5e1ae2a2c61f3a392ef767e76ece13675c85bf0a737acc89`.
+Together, these runs cover both palette algorithms and the 15/24/30 fps cadence
+families on real footage. They are not playback qualifications or broad source
+profile benchmarks.
+
+A fourth variant used the exact project cadence `30000/1001` (29.97 fps),
+mosaic-gm and cold cap 210. Its 3,494-frame CUDA encode took 531.8 s CLI wall
+time (529.0 s stage time). The packer verified every display slot, pattern
+transfer, audio chunk, cadence route and WordBuf deadline; native player/ISO
+assembly and independent ISO verification completed in 102.0 s. The 18,669,568-
+byte ISO/CUE are preserved under `tmp/windows-qual-tears-of-steel-2997/`; its
+SHA-256 is `a778ae48d7f84e4ffba97fc05329ecc19f4446f051fdf708472a27dc21265023`.
+Receipts are `logs/windows-cli-encode-20261030T185819361995Z.json` and
+`logs/windows-cli-disc-20261030T185822110872Z.json`. The documented
+`tools/cavc.ps1 convert` command then reused the same completed 3,494-frame
+encode (`simulation skipped`) and rebuilt the verified ISO in 102.0 s through
+the argument-preserving PowerShell launcher.
+Together, the real-source
+runs now cover 15, 24, 30 and 30000/1001 fps cadence families with both palette
+algorithms. They remain encode/pack/ISO qualifications, not playback proof or
+broad coverage of other source profiles.
+
 ## Planning work reuse
 
 The online delivery planner checks only the preceding and newly appended
@@ -265,6 +368,76 @@ Core i9-13900KFで比較しました。正規化済みRGB/PCMを共通入力と�
 全byte、全canonical RGB frame、再構成PCMの一致を確認しました。
 `webenc/harness/planning/README.md`に中間段階の測定、工程別の変動、環境と再現手順を
 記載しています。
+
+### Native Windowsでの全source測定
+
+これはhost固有のqualification sampleであり、cross-platform比較の基準では
+ありません。mosaic-gm、cold cap 210の生成flat-color sourceは16,384 frames、
+320x224、24 fpsです。Windows 10 (build 19045)、i7-9700、RTX 5060 Tiで測定し、CPU/CUDAは
+disk-backed array、3回目のCPU実行はmemory-backed arrayを使いました。各stageは1回の測定値で、
+最後のCUDA列はresource測定のための再実行です。
+
+| Stage | CPU、disk | CPU、memory | CUDA、disk | CUDA、再実行 |
+|---|---:|---:|---:|---:|
+| Extract | 29.9 s | 29.1 s | 29.9 s | 29.2 s |
+| Palette | 123.3 s | 109.9 s | 133.4 s | 119.1 s |
+| Quantize | 364.0 s | 357.3 s | 235.3 s | 218.4 s |
+| Forecast | 135.4 s | 134.2 s | 132.5 s | 132.8 s |
+| Decide | 1,045.9 s | 1,027.3 s | 975.2 s | 972.0 s |
+| Finalize | 0.8 s | 0.8 s | 0.8 s | 0.8 s |
+| **合計** | **1,699.3 s** | **1,658.6 s** | **1,507.1 s** | **1,472.4 s** |
+
+CPU/CUDA間ですべての保存decision、trace、palette、mask、audioが一致しました。
+memory-backed CPUもdisk-backed CPUと一致しました。DecideはCPU処理のため、CUDA実行は
+GPUのみのencodeではありません。新しいCUDA再実行も以前のCUDA出力と一致し、profile fileと
+source pathのprovenanceだけを正規化した比較で、全decision、numeric trace、palette、mask、
+audioが一致しました。
+
+5秒間隔のprocess tree測定では、Working Set合計の最大は5.34 GiB、
+`Get-Process.PrivateMemorySize64`合計の最大は1.53 GiBでした。30秒間隔のdirectory測定では、
+scratch最大4.80 GiB、workspace最大87.7 MiBでした。5秒間隔の`nvidia-smi`測定では
+device全体の使用量が最大1,162 MiBで、実行後のidle使用量は756 MiBでした。このGPU値は
+process単位の使用量ではありません。sampled peakのため短時間のspikeを逃す場合があります。
+以前の7.38 GiBは`Win32_Process.PrivatePageCount`による値で、Private Bytesとは比較できません。
+
+packed output 5種は記録済みのLinux 8cc7bea hashとも一致しますが、Linux/WindowsのMP4 source
+hashは異なり、Linux inputもここにはありません。この比較は同じnormalized inputでの厳密な
+確認ではありません。他のsource/profileの検証も未完了です。`harness/windows_port/README.md`を参照してください。
+
+### Native Windowsのreal-source profile測定
+
+repositoryのTears of Steel profileを、公式[Blender 720p source](https://download.blender.org/demo/movies/ToS/tears_of_steel_720p.mov)
+の先頭116.564秒に対して実行しました（SHA-256 `efa9062d9cdb7a338e40ad530dfdf234806743f29ae6a1a136b97ece4e588e8f`）。
+Blenderは[project page](https://mango.blender.org/about/)でfilmをCC BY 3.0としています。
+profileの設定は維持し、320x168、24 fps、mosaic-gm、cold cap `2:180,3:230`、既存のmono audio filterを使用しました。
+2,798 frameのCUDA encodeはWindows 10 / RTX 5060 Ti host上の新しいpinned GPU environmentで完了しました。
+
+| Stage | 15 fps、stl4 | 24 fps、mosaic-gm | 30 fps、mosaic-gm | 30000/1001 fps、mosaic-gm |
+|---|---:|---:|---:|---:|
+| Extract | 10.0 s | 16.8 s | 16.7 s | 16.7 s |
+| Palette | 47.5 s | 39.0 s | 35.5 s | 34.8 s |
+| Quantize | 65.2 s | 134.8 s | 140.0 s | 142.9 s |
+| Forecast | 19.4 s | 29.4 s | 33.1 s | 33.1 s |
+| Decide | 102.5 s | 228.2 s | 292.5 s | 293.0 s |
+| Finalize | 8.2 s | 10.1 s | 9.2 s | 8.5 s |
+| **Stage合計** | **252.8 s** | **458.2 s** | **526.9 s** | **529.0 s** |
+
+palette trainingは3 segmentを選び、fade-inとhorizontal scrollを検出しました。全preload/refill proofを通してWordBufは有効でした。
+通常packerは2,798 display slot、pattern transfer、audio chunk順、route、WordBuf deadlineを検証しました。
+native Main/Sub/boot assemblyと独立ISO readerにより、JP release ISO/CUEを73.4秒で生成・検証しました。ISOは18,671,616 bytes、SHA-256は
+`2f956affbd553b82a0c9f7ce412304a36b72d2b14fdad4d8417fa624dc4bc1be`です。
+
+2つ目のprofile variantは同じsource clipを15 fps、`stl4` palette、cold cap 480で処理しました。1,749 frameのencodeはCLI wall time 255.5秒で完了し、
+15 fpsのpackageもdisplay、pattern transfer、WordBuf、audio、cadence、physical slotの完全検証を通過しました。native player assemblyと独立ISO検証は37.3秒で完了しました。
+18,636,800-byteのISO/CUEは`tmp/windows-qual-tears-of-steel-stl4-15/`に保存し、SHA-256は
+`ca86601dccf63671855800f4c1a7da097f415c905fa7d40879e99eda9dc7e530`です。
+3つ目のreal-source variantは30 fps、mosaic-gm、cold cap 210です。3,498 frameのencodeはCLI wall time 529.6秒（stage time 526.9秒）で完了しました。
+packは全display slot、pattern transfer、audio chunk、cadence route、WordBuf deadlineを検証し、native player assemblyと独立ISO検証は99.4秒で完了しました。
+18,692,096-byteのISO/CUEは`tmp/windows-qual-tears-of-steel-30fps/`に保存し、SHA-256は
+`2f109ff954cd7e2d5e1ae2a2c61f3a392ef767e76ece13675c85bf0a737acc89`です。
+4つ目のvariantはprojectと同じ`30000/1001`（29.97 fps）、mosaic-gm、cold cap 210を使用しました。3,494 frameのCUDA encodeはCLI wall time 531.8秒（stage time 529.0秒）でした。packは全display slot、pattern transfer、audio chunk、cadence route、WordBuf deadlineを検証し、native player/ISO assemblyと独立ISO検証は102.0秒で完了しました。18,669,568-byte ISO/CUEは`tmp/windows-qual-tears-of-steel-2997/`に保存し、SHA-256は`a778ae48d7f84e4ffba97fc05329ecc19f4446f051fdf708472a27dc21265023`です。receiptは`logs/windows-cli-encode-20261030T185819361995Z.json`と`logs/windows-cli-disc-20261030T185822110872Z.json`です。ドキュメント記載の`tools/cavc.ps1 convert`も同じ3,494-frame encodeをcacheから再利用し（simulation skipped）、更新後のPowerShell launcherで検証済みISOを102.0秒で再構築しました。
+
+これらのreal-source実行は両palette algorithmと15、24、30、30000/1001 fps cadence familyを確認しました。encode/pack/ISO qualificationであり、playback proofや他source profileの幅広い検証ではありません。
 
 ## 計画処理の再利用
 

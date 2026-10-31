@@ -144,7 +144,7 @@ def multipart_values(path: Path, profile) -> dict:
     import numpy as np
     import tmpfs_workspace
     from multipart import digest
-    manifest = json.loads(path.read_text())
+    manifest = json.loads(path.read_text(encoding="utf-8"))
     if Path(manifest["profile"]).resolve() != profile.path.resolve():
         raise SystemExit("multipart manifest belongs to another source profile")
     if ".".join(manifest["versions"]) != ".".join(build_version().split(".")[1:]):

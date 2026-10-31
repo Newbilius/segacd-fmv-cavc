@@ -35,12 +35,12 @@ class ProfilePathTests(unittest.TestCase):
         self.profile = load_profile(PROFILE)
 
     def test_release_disc_paths_follow_the_makefile(self):
-        self.assertEqual(str(self.profile.region_release_disc_iso("jp")),
-                         "out/bad-apple_release.iso")
-        self.assertEqual(str(self.profile.region_release_disc_iso("us")),
-                         "out/bad-apple_us_release.iso")
-        self.assertEqual(str(self.profile.region_release_disc_cue("us")),
-                         "out/bad-apple_us_release.cue")
+        self.assertEqual(self.profile.region_release_disc_iso("jp"),
+                         Path("out/bad-apple_release.iso"))
+        self.assertEqual(self.profile.region_release_disc_iso("us"),
+                         Path("out/bad-apple_us_release.iso"))
+        self.assertEqual(self.profile.region_release_disc_cue("us"),
+                         Path("out/bad-apple_us_release.cue"))
 
 
 class NamingTests(unittest.TestCase):

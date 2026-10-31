@@ -21,12 +21,17 @@ def enabled():
     if _STATE["checked"]:
         return _STATE["on"]
     _STATE["checked"] = True
-    if os.environ.get("CBRSIM_GPU", "1").strip().lower() in ("0", "off", "false", "no"):
-        print("[gpu_quant] CBRSIM_GPU=0 指定によりCPUで実行します")
+    device = os.environ.get("CBRSIM_DEVICE", "auto").strip().lower()
+    if device not in ("auto", "cpu", "cuda"):
+        raise ValueError(f"CBRSIM_DEVICE must be auto, cpu, or cuda, got {device!r}")
+    if device == "cpu" or os.environ.get("CBRSIM_GPU", "1").strip().lower() in ("0", "off", "false", "no"):
+        if device == "cuda":
+            raise RuntimeError("CUDA requested while CBRSIM_GPU disables GPU use")
+        print("[gpu_quant] CPU execution selected")
         return False
     try:
         import cupy as cp
-        # デバイスに一度触れて JIT カーネルまで通ることを確認
+        # Exercise a device allocation, kernel, and synchronization.
         a = cp.arange(4, dtype=cp.int32).reshape(1, 1, 1, 1, 4)
         b = cp.arange(4, dtype=cp.int32).reshape(1, 1, 1, 1, 4)
         int(((a - b) ** 2).sum())
@@ -34,9 +39,11 @@ def enabled():
         _STATE["cp"] = cp
         _STATE["on"] = True
         name = cp.cuda.runtime.getDeviceProperties(0)["name"].decode()
-        print(f"[gpu_quant] GPU 有効(既定): {name}")
-    except Exception as e:  # noqa: BLE001 (どんな失敗でもCPUへ退避)
-        print(f"[gpu_quant] GPU 使用不可のためCPUへフォールバック: {e}")
+        print(f"[gpu_quant] CUDA enabled: {name}")
+    except Exception as e:  # noqa: BLE001: auto mode falls back to CPU.
+        if device == "cuda":
+            raise RuntimeError(f"CUDA was requested but could not be initialized: {e}") from e
+        print(f"[gpu_quant] CUDA unavailable; using CPU: {e}")
         _STATE["on"] = False
     return _STATE["on"]
 
@@ -49,7 +56,7 @@ def cupy():
 
 
 class PalCache:
-    """区間パレットのRGB333二乗誤差/index LUTをGPU上にキャッシュする。"""
+    """Cache RGB333 squared-error and index lookup tables on the GPU."""
 
     def __init__(self):
         self._d = {}

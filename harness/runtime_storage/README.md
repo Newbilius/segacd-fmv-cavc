@@ -2,8 +2,10 @@
 
 This harness checks the actual CLI, child-process environment, artifact leases,
 resource locks and numeric caches. It does not require `/dev/shm`, systemd, or a
-particular home directory. The tools target POSIX; Linux memory/filesystem probes
-are optional. There is no native Windows qualification.
+particular home directory. The full encoder/storage workflow still targets
+POSIX; Linux memory/filesystem probes are optional. Focused native Windows lock,
+mapped-array, and ISO checks are in `harness/windows_port/`; they do not qualify
+the full encoder/storage workflow.
 
 ## Small storage check
 
@@ -76,8 +78,33 @@ tools/python.sh harness/runtime_storage/compare.py \
   --tsv logs/memory16384-equivalence.tsv
 ```
 
-The comparator reads every saved decision and numeric field plus audio/palette
-bytes; it ignores no quality metrics. Pickles must be trusted local outputs.
+The comparator reads every saved decision and numeric field, palette bytes,
+and both WAV formats and PCM sample streams. It ignores only non-audio RIFF
+metadata chunks, such as an encoder-version string; it ignores no quality
+metrics. Pickles must be trusted local outputs.
+
+For outputs created from copies of the same checkout under different paths,
+`--normalize-path-provenance` ignores only the profile path/hash and source
+path recorded in `decisions.pkl`; it still compares all effective settings and
+frame decisions. Use this only after independently confirming the source file
+SHA-256 and effective profile settings match. The option does not establish
+that two input files contain the same bytes:
+
+```sh
+tools/python.sh harness/runtime_storage/compare.py \
+  /path/to/baseline/data /path/to/candidate/data \
+  --normalize-path-provenance --tsv logs/cross-checkout-equivalence.tsv
+```
+
+If FFmpeg versions create different container bytes for the same decoded
+media, first compare the complete decoded video and audio streams with
+`harness/windows_port/compare_normalized_source.py`. Its TSV records both
+container hashes and the decoded stream hashes. Only after those stream hashes
+match should `--normalize-path-provenance` be used to compare outputs from
+profiles that name the two files differently. Retain the normalized-source
+TSV beside the decision-comparison TSV; the comparator itself does not inspect
+source media.
+
 Then pack each decision log through its corresponding implementation with the
 same boot extension and full normal pack verification. Compare HEADER.DAT,
 BODY.DAT, MOVIE.DAT, paltab.bin and palidx.bin hashes. This separates encoder
@@ -112,7 +139,8 @@ normal exit. This is one observed run per variant, not a throughput benchmark
 or a worst-case bound for complex footage.
 
 All saved decisions for all 16,384 frames, every stats/buffer/palette numeric
-field, miss masks and both audio files match (`decisions-equivalence.tsv`).
+field, miss masks, and both WAV formats and PCM sample streams match
+(`decisions-equivalence.tsv`).
 Each implementation's real packer passed its full display, audio, physical
 deadline and BODY-slot verification using the same boot extension. HEADER.DAT,
 BODY.DAT, MOVIE.DAT, paltab.bin and palidx.bin are byte-identical;

@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Run project Python tools from the uv-managed, system-independent environment.
+# On native Windows, delegate to the PowerShell launcher instead of requiring Bash.
+if [ "${OS:-}" = "Windows_NT" ] && command -v powershell.exe >/dev/null 2>&1; then
+  ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  exec powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT/tools/python.ps1" "$@"
+fi
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +20,14 @@ while [ "$#" -gt 0 ]; do
       VERSION_FILE="$ROOT/.python-version-gpu"
       BOOTSTRAP_MODE=--gpu
       shift ;;
+    --device)
+      if [ "$#" -lt 2 ]; then echo "--device requires cpu, auto, or cuda" >&2; exit 2; fi
+      case "$2" in
+        cpu) export CBRSIM_DEVICE=cpu; ENV_DIR="$ROOT/.venv"; VERSION_FILE="$ROOT/.python-version"; BOOTSTRAP_MODE=--cpu ;;
+        auto|cuda) export CBRSIM_DEVICE="$2"; ENV_DIR="$ROOT/.venv-gpu"; VERSION_FILE="$ROOT/.python-version-gpu"; BOOTSTRAP_MODE=--gpu ;;
+        *) echo "invalid device: $2" >&2; exit 2 ;;
+      esac
+      shift 2 ;;
     --workspace-root|--scratch-root|--array-storage)
       if [ "$#" -lt 2 ]; then echo "$1 requires a value" >&2; exit 2; fi
       RUNTIME_ARGS+=("$1" "$2")

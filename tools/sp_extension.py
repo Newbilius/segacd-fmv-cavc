@@ -98,7 +98,7 @@ def generate(binary_path: Path, output_path: Path) -> ExtensionMetadata:
     """Write a stable include and return the verified binary metadata."""
     values = metadata(binary_path.read_bytes())
     rendered = render_include(values)
-    if not output_path.is_file() or output_path.read_text() != rendered:
+    if not output_path.is_file() or output_path.read_text(encoding="utf-8") != rendered:
         output_path.write_text(rendered)
     return values
 

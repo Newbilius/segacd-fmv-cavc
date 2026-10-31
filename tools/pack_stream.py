@@ -2517,8 +2517,8 @@ if __name__ == "__main__":
     _sim_lease = None
     if _command_profile is not None:
         try:
-            _stem_lease = resource_tokens.acquire_stem(
-                _command_profile.sim_stem)
+            _stem_lease = resource_tokens.acquire_stems(
+                _command_profile.lock_stems)
         except resource_tokens.ResourceBusyError as exc:
             print(str(exc), file=sys.stderr)
             raise SystemExit(75) from exc

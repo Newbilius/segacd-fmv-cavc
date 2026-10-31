@@ -3206,10 +3206,8 @@ poll_max_gap:
 .ifdef DEBUG_PRGBUF_Q
 ring_level:
 	.word	0				/* signed logical PrgBuf balance in 32-byte patterns */
-.ifndef DEBUG_PRGMIN_DIRECT
 ring_frame_min:
 	.word	0				/* signed minimum balance observed during this frame */
-.endif
 .endif
 .endif
 

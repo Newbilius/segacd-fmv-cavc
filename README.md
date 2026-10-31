@@ -210,10 +210,11 @@ managed workspace paths. Per-frame codec timeline and playback HUD TSVs plus the
 gate/layout/Gist metadata remain under `logs/`, with encoder and player
 versions in every TSV filename.
 
-Heavy stages share CPU, GPU, and emulator tokens. Different profile stems may
-overlap, while the same stem is rejected immediately. Xvfb displays, RetroArch
-system directories, build intermediates, and workspace leases are isolated per
-run.
+Heavy stages share CPU, GPU, and emulator tokens. Jobs with different media
+stems may overlap when their build outputs are distinct. A shared media stem or
+the same case-normalized output path on Windows is rejected immediately. Xvfb
+displays, RetroArch system directories, build intermediates, and workspace
+leases are isolated per run.
 
 ## Runtime storage
 
@@ -296,21 +297,23 @@ tools/python.sh --gpu -c \
 `.venv-gpu`. Neither falls back to system Python or distribution packages.
 The lock uses managed CPython 3.14.4 for CPU, CPython 3.13.14 for GPU, NumPy
 2.3.5, Pillow 12.1.1, and CuPy 14.1.1.
+The GPU environment also pins NVIDIA CUDA runtime 12.9.79, NVRTC 12.9.86,
+and nvJitLink 12.9.86; it does not require a separately installed CUDA Toolkit.
 
 Install a Marsdev `m68k-elf` toolchain at `~/toolchains/mars`, or set
-`MARSDEV` / `M68K_PREFIX` to another installation. The Makefile expects:
+`MARSDEV` / `M68K_PREFIX` to another installation. The normal player build uses:
 
 ```text
 m68k-elf-as
-m68k-elf-gcc
 m68k-elf-ld
 m68k-elf-objcopy
 ```
 
-Check the toolchain and ISO writer:
+The unrelated hardware diagnostic targets may additionally use GCC and
+`mkisofs`/`genisoimage`. Check the normal player prerequisites with:
 
 ```sh
-make check-tools CONFIG=profiles/PROFILE.toml
+make check-player-tools CONFIG=profiles/PROFILE.toml
 ```
 
 The region BIOS images are user-supplied and git-ignored. Japan is the default;
@@ -338,6 +341,83 @@ directory. The normal `retroarch_<tag>.log` retains the DMA trace and unexpected
 core errors. The complete upstream trace is kept beside it as
 `gpgx_logvdp_<tag>.log.gz`.
 
+## Native Windows CLI
+
+The PowerShell conversion path does not use WSL, a virtual machine, Bash,
+Make, or the browser encoder. On a clean x64 Windows 10/11 machine with WinGet,
+install the external tools and pinned Python manager with:
+
+```powershell
+winget install --id 7zip.7zip --exact --version 26.02 --accept-source-agreements --accept-package-agreements
+winget install --id Gyan.FFmpeg --exact --version 8.1.2 --accept-source-agreements --accept-package-agreements
+```
+
+Close and reopen PowerShell so WinGet's installed command paths are loaded,
+then install the pinned uv binary and add its directory to this session's path:
+
+```powershell
+.\harness\windows_port\install_uv.ps1
+$env:PATH = "$env:USERPROFILE\toolchains\cavc-uv\0.11.29\bin;$env:PATH"
+```
+
+FFmpeg/FFprobe are provided by Gyan's Windows build; `doctor` prints the actual
+binary versions and paths. If WinGet is unavailable, install 7-Zip from its official Windows
+download and obtain FFmpeg/FFprobe from a Windows build provider, then verify
+both commands are on `PATH`. The repository's `install_uv.ps1` downloads the
+official uv 0.11.29 Windows x64 release and verifies its SHA-256 before
+installation. WinGet verifies the 7-Zip and Gyan FFmpeg package hashes from
+their manifests.
+
+The native SGDK v2.11 binutils archive is pinned and SHA-256 checked by the
+repository installer. Set `M68K_PREFIX` to its tool prefix, for example
+`C:\toolchains\m68k-elf\bin\m68k-elf-`.
+
+To install the Windows tool binaries from the official SGDK v2.11 release,
+install 7-Zip and run:
+
+```powershell
+.\harness\windows_port\install_sgdk_tools.ps1
+$env:M68K_PREFIX = "$env:USERPROFILE\toolchains\cavc-m68k\bin\m68k-elf-"
+```
+
+The installer checks the release archive's SHA-256 before extracting the
+assembler, linker, objcopy, `nm`, `size`, and `objdump` tools and verifies
+GNU binutils 2.40. SGDK also distributes its license files with the release.
+Each run downloads to a unique temporary archive and removes it after
+verification and extraction, so parallel installs do not share that file.
+Use the resulting toolchain for the commands below; a full player/disc
+qualification is still required for each release.
+
+```powershell
+.\tools\bootstrap_python.ps1 --cpu
+.\tools\bootstrap_python.ps1 --gpu
+.\tools\cavc.ps1 doctor
+.\tools\cavc.ps1 convert profiles\PROFILE.toml --device cuda
+.\tools\cavc.ps1 convert profiles\PROFILE.toml --device cpu
+.\tools\cavc.ps1 multipart profiles\PROFILE.toml --parts 3 --device cuda
+```
+
+`doctor` checks interpreter packages, FFmpeg, m68k tools, storage, and CUDA.
+`auto` uses the GPU environment when installed and falls back to CPU if CUDA
+cannot initialize; `cuda` requires usable CUDA. `disc` reuses a completed
+encode, while `convert` runs encoding and disc production. Windows recording,
+HUD analysis, emulator, and burner workflows are not part of this CLI port. On
+the current Windows host, the canonical 16,384-frame CPU and CUDA encodes,
+CPU/GPU output comparison, native player builds, verified single-movie
+ISO/CUE, and resumable two-part multipart ISO/CUE have passed. A fresh CUDA
+resource run also recorded sampled process memory, temporary disk use, and
+device-wide GPU memory. Clean-machine bootstrap, broader real-source coverage,
+and hosted Windows CI evidence remain open. The documented Gyan FFmpeg 8.1.2
+package also completed an isolated 2,798-frame Tears of Steel `convert`; saved
+decisions/traces, PCM samples, and independently extracted HEADER/BODY files
+matched the earlier verified run. The 16,384-frame source generator now writes valid Windows TOML
+paths; a regenerated source in a path with spaces and Japanese characters
+completed CUDA encoding and disc construction. Its five packed files match the
+recorded Linux baseline, and its decoded media matches the earlier Windows
+source. The original Linux source file is absent, so direct decoded-source
+comparison against that file remains open. See `harness/windows_port/README.md`
+for the full acceptance status.
+
 ## Build
 
 For a split encode, use [multipart](#multipart-cli); it builds the ISO
@@ -353,11 +433,16 @@ make disc CONFIG=profiles/PROFILE.toml DEBUG=1
 `make disc` cleans the selected profile's packed stream, verifies the
 profile-authenticated `decisions.pkl`, specializes the player, and writes:
 
+The `make disc`, `make moviepack`, and `make movieplay-module` targets delegate
+to the same `tools/build_disc.py` implementation used by the Windows CLI. This
+keeps packing, player checks, assembly, and ISO creation in one code path.
+
 ```text
 out/PROFILE/HEADER.DAT
 out/PROFILE/BODY.DAT
 out/PROFILE/MOVIE.DAT
-out/PROFILE/palettes.bin
+out/PROFILE/paltab.bin
+out/PROFILE/palidx.bin
 out/PROFILE.iso
 out/PROFILE.cue
 ```
@@ -739,9 +824,10 @@ managed workspace実体pathを直接使います。Frame別codec timeline TSVと
 およびgate/layout/Gist metadataは`logs/`へ保持し、TSV filenameにはencoder/player
 versionを入れます。
 
-heavy stageはCPU、GPU、emulator tokenを共有します。異なるprofile stemは重ねられますが、
-同じstemは即時拒否します。Xvfb display、RetroArch system directory、
-build intermediate、workspace leaseはrunごとに分離します。
+heavy stageはCPU、GPU、emulator tokenを共有します。
+media stemとbuild output pathが別ならjobは並行実行できます。
+同じmedia stem、またはWindows上でcase-normalizedした同一output pathを使うjobは即時拒否します。
+Xvfb display、RetroArch system directory、build intermediate、workspace leaseはrunごとに分離します。
 
 ## 実行時の保存先
 
@@ -821,21 +907,23 @@ tools/python.sh --gpu -c \
 `tools/python.sh` は `.venv`、`tools/python.sh --gpu` は `.venv-gpu` を選びます。
 system Pythonやdistribution packageへfallbackしません。lockはCPUにmanaged CPython
 3.14.4、GPUにCPython 3.13.14、NumPy 2.3.5、Pillow 12.1.1、CuPy 14.1.1を使います。
+GPU environmentはNVIDIA CUDA runtime 12.9.79、NVRTC 12.9.86、nvJitLink 12.9.86もpinし、
+別途CUDA Toolkitをinstallする必要はありません。
 
 Marsdev `m68k-elf` toolchainを `~/toolchains/mars` にinstallするか、別installationを
-`MARSDEV` / `M68K_PREFIX` で指定します。Makefileは次を使います。
+`MARSDEV` / `M68K_PREFIX` で指定します。通常のplayer buildは次を使います。
 
 ```text
 m68k-elf-as
-m68k-elf-gcc
 m68k-elf-ld
 m68k-elf-objcopy
 ```
 
-toolchainとISO writerを確認します。
+別系統のhardware diagnostic targetではGCCと`mkisofs`/`genisoimage`も使う場合があります。
+通常のplayer prerequisiteは次で確認します。
 
 ```sh
-make check-tools CONFIG=profiles/PROFILE.toml
+make check-player-tools CONFIG=profiles/PROFILE.toml
 ```
 
 region別BIOS imageはuser suppliedかつgit-ignoredです。defaultは日本で、北米imageを
@@ -862,6 +950,59 @@ BIOSをrunごとのprivate system directoryへcopyします。通常の
 `retroarch_<tag>.log`にはDMA traceと想定外のcore errorを残し、上流trace全体は隣の
 `gpgx_logvdp_<tag>.log.gz`へ保存します。
 
+## Native Windows CLI
+
+PowerShellの変換経路はWSL、仮想マシン、Bash、Make、ブラウザー版エンコーダーを使いません。
+WinGetを利用できるx64版Windows 10/11の新規環境では、外部toolと固定版Python managerを次の手順でinstallできます。
+
+```powershell
+winget install --id 7zip.7zip --exact --version 26.02 --accept-source-agreements --accept-package-agreements
+winget install --id Gyan.FFmpeg --exact --version 8.1.2 --accept-source-agreements --accept-package-agreements
+```
+
+WinGetのcommand pathを読み込むためPowerShellを終了して再起動し、そのsessionで固定版uvをinstallしてPATHへ追加してください。
+
+```powershell
+.\harness\windows_port\install_uv.ps1
+$env:PATH = "$env:USERPROFILE\toolchains\cavc-uv\0.11.29\bin;$env:PATH"
+```
+
+FFmpeg/FFprobeはGyanのWindows buildです。`doctor`は実際のversionとpathを表示します。WinGetが使えない場合は、公式7-Zip配布元とWindows FFmpeg build providerから入手し、両方のcommandがPATH上にあることを確認してください。repositoryの`install_uv.ps1`は公式uv 0.11.29 Windows x64 releaseをdownloadし、SHA-256を照合してからinstallします。WinGetは7-ZipとGyan FFmpegのmanifest hashを照合します。
+
+公式SGDK v2.11 releaseからWindows用toolをinstallする場合は、7-Zipをinstallして
+次を実行します。
+
+```powershell
+.\harness\windows_port\install_sgdk_tools.ps1
+$env:M68K_PREFIX = "$env:USERPROFILE\toolchains\cavc-m68k\bin\m68k-elf-"
+```
+
+installerは展開前にrelease archiveのSHA-256を照合し、assembler、linker、objcopy、`nm`、`size`、`objdump`を取り出し、GNU binutils 2.40を確認します。license fileは同archiveに含まれます。downloadには実行ごとに異なる一時archiveを使い、検証と展開後に削除するため、並行installでもarchiveを共有しません。各releaseの全player/disc qualificationは別途必要です。
+
+```powershell
+.\tools\bootstrap_python.ps1 --cpu
+.\tools\bootstrap_python.ps1 --gpu
+.\tools\cavc.ps1 doctor
+.\tools\cavc.ps1 convert profiles\PROFILE.toml --device cuda
+.\tools\cavc.ps1 convert profiles\PROFILE.toml --device cpu
+.\tools\cavc.ps1 multipart profiles\PROFILE.toml --parts 3 --device cuda
+```
+
+`doctor`はPython package、FFmpeg、m68k tool、保存領域、CUDAを確認します。
+`auto`はGPU環境があれば選択し、CUDAを初期化できない場合はCPUへfallbackします。
+`cuda`は利用可能なCUDAを必須とします。`disc`は完了済みencodeを再利用し、
+`convert`はencodeとdisc生成を続けて実行します。Windowsでのrecording、HUD分析、
+emulator、burner workflowはこのCLI移植の対象外です。このWindows hostでは、
+16,384 frameのCPU/CUDA encode、CPU/GPU出力比較、native player build、検証済みの
+single-movie ISO/CUE、resume可能な2-part multipart ISO/CUEを確認しました。新しいCUDA resource
+runでprocess memory、一時disk、device全体のVRAM peakもsample測定しました。同一normalized
+inputでの厳密なcross-platform同等性、clean-machine bootstrap、実source coverage拡大、hosted
+Windows CIは未完了です。記載したGyan FFmpeg 8.1.2でもTears of Steel 2,798 frameの`convert`を
+別workspaceで完了し、保存decision/trace、PCM sample、独立抽出したHEADER/BODYが前回の検証済み出力と一致しました。
+詳しいacceptance状況は`harness/windows_port/README.md`を参照してください。
+`harness/frame_capacity/make_source.py` を修正し、Windowsのabsolute pathをvalid TOMLとして保存します。spaceと日本語を含むpathで16,384 frameのCUDA encodeとdisc buildが完了し、5つのpacked fileは記録済みLinux baselineのSHA-256と一致しました。decoded mediaも前回のWindows sourceと一致しましたが、元のLinux source fileがcheckoutにないため、直接のdecoded-stream比較は未完了です。
+
+
 ## Build
 
 分割エンコードには[multipart](#multipart-cli-jp)を使います。
@@ -876,12 +1017,14 @@ make disc CONFIG=profiles/PROFILE.toml DEBUG=1
 
 `make disc` は選択profileのpacked streamをcleanし、profile-authenticated
 `decisions.pkl` を検証し、playerをspecializeして次を書きます。
+`make disc`、`make moviepack`、`make movieplay-module`は、Windows CLI と共通の `tools/build_disc.py` に処理を委譲します。packing、player checks、assembly、ISO 作成を単一の code path で実行します。
 
 ```text
 out/PROFILE/HEADER.DAT
 out/PROFILE/BODY.DAT
 out/PROFILE/MOVIE.DAT
-out/PROFILE/palettes.bin
+out/PROFILE/paltab.bin
+out/PROFILE/palidx.bin
 out/PROFILE.iso
 out/PROFILE.cue
 ```

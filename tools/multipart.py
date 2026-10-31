@@ -21,11 +21,20 @@ import encode_config
 import resource_tokens
 import sim_artifact_cache
 import tmpfs_workspace
+import process_tree
 from source_range import frame_range
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_PARTS = encode_config.MAX_MULTIPART_PARTS
 PACKED_FILES = ("HEADER.DAT", "BODY.DAT", "MOVIE.DAT", "paltab.bin", "palidx.bin")
+
+
+def validate_windows_part_stem(stem):
+    """Keep generated per-part profile/artifact names within Win32 limits."""
+    if os.name == "nt" and len(stem) + len("-part064") > 240:
+        raise ValueError(
+            "multipart profile filename is too long for Windows; shorten its "
+            "stem so generated part profiles stay within 240 characters")
 
 
 def digest(path):
@@ -81,11 +90,15 @@ def toml_text(data):
 
 
 @contextlib.contextmanager
-def stem_lock(stem):
-    with resource_tokens.acquire_stem(stem):
+def stem_lock(stems):
+    if isinstance(stems, str):
+        stems = (stems,)
+    else:
+        stems = tuple(stems)
+    with resource_tokens.acquire_stems(stems):
         key = resource_tokens.HELD_STEMS_ENV
         previous = os.environ.get(key)
-        os.environ.update(resource_tokens.held_stem_environment(stem))
+        os.environ.update(resource_tokens.held_stems_environment(stems))
         try:
             yield
         finally:
@@ -111,8 +124,9 @@ def run_logged(command, name, *, env=None, handoff=None):
         with log.open("w", encoding="utf-8") as output:
             output.write("$ " + " ".join(receipt["command"]) + "\n")
             output.flush()
-            process = subprocess.Popen(receipt["command"], cwd=ROOT, env=environment,
-                                       stdout=output, stderr=subprocess.STDOUT)
+            launch = {"cwd": ROOT, "env": environment, "stdout": output,
+                      "stderr": subprocess.STDOUT}
+            process = process_tree.popen(receipt["command"], **launch)
             receipt["pid"] = process.pid
             write_json(log.with_suffix(".json"), receipt)
             print(f"multipart: {name}: pid={process.pid} log={log}", flush=True)
@@ -121,18 +135,23 @@ def run_logged(command, name, *, env=None, handoff=None):
                     if handoff is not None and lease is None:
                         ready = handoff / "ready.json"
                         if ready.exists():
-                            path = Path(json.loads(ready.read_text())["path"])
+                            path = Path(json.loads(ready.read_text(encoding="utf-8"))["path"])
                             lease = tmpfs_workspace.lease_managed_path(path)
                             if lease is None:
                                 raise RuntimeError(f"cannot pin completed SIM: {path}")
                             (handoff / "ack").write_text("pinned\n")
                     time.sleep(0.1)
             except BaseException:
-                process.terminate()
+                if process.poll() is None:
+                    process_tree.terminate(process)
                 process.wait()
                 raise
             finally:
-                receipt.update(exit_code=process.poll(), seconds=time.perf_counter()-started)
+                receipt.update(
+                    exit_code=process.poll(),
+                    ended_at=datetime.now(timezone.utc).isoformat(),
+                    seconds=time.perf_counter()-started,
+                )
                 write_json(log.with_suffix(".json"), receipt)
         if process.returncode:
             raise RuntimeError(f"{name} failed ({process.returncode}); inspect {log}")
@@ -161,7 +180,7 @@ def count_frames(profile, name):
             "-map", "0:v:0", "-vf", f"fps={source['fps']}", "-an",
             "-progress", "pipe:1", "-nostats", "-f", "null", "-",
         ], name + "-count")
-    counts = [int(line.split("=", 1)[1]) for line in Path(record["log"]).read_text().splitlines()
+    counts = [int(line.split("=", 1)[1]) for line in Path(record["log"]).read_text(encoding="utf-8").splitlines()
               if line.startswith("frame=")]
     if not counts or counts[-1] < 2:
         raise ValueError("source has fewer than two output frames")
@@ -171,10 +190,11 @@ def count_frames(profile, name):
 def prepare(profile, parts):
     identity = input_identity(profile, parts)
     stem = f"{profile.artifact_stem}-multipart{parts}-{token(identity)[:12]}"
+    validate_windows_part_stem(stem)
     work = ROOT / "tmp" / stem
     plan_file = work / "plan.json"
     if plan_file.is_file():
-        plan = json.loads(plan_file.read_text())
+        plan = json.loads(plan_file.read_text(encoding="utf-8"))
         if plan.get("identity") != identity:
             raise ValueError("multipart plan identity differs")
     else:
@@ -201,7 +221,7 @@ def prepare(profile, parts):
         data["output"].update(emit_decisions=True, reuse=False)
         path = directory / f"{stem}-part{number:03}.toml"
         text = toml_text({"schema_version": encode_config.SCHEMA_VERSION, **data})
-        if not path.exists() or path.read_text() != text:
+        if not path.exists() or path.read_text(encoding="utf-8") != text:
             path.write_text(text, encoding="utf-8")
         profiles.append(encode_config.load_profile(path))
     return plan, profiles
@@ -216,7 +236,7 @@ def completed_part(plan, number, profile):
     marker = ROOT / profile.artifact_dir / "multipart-complete.json"
     if not marker.exists():
         return None
-    record = json.loads(marker.read_text())
+    record = json.loads(marker.read_text(encoding="utf-8"))
     if record.get("identity") != part_identity(plan, number, profile):
         raise ValueError(f"part {number}: completion identity differs")
     for name in PACKED_FILES:
@@ -227,15 +247,16 @@ def completed_part(plan, number, profile):
 
 
 def encode_part(plan, number, profile):
-    with stem_lock(profile.sim_stem):
+    with stem_lock(profile.lock_stems):
         handoff = ROOT / "tmp" / plan["stem"] / ("handoff-" + uuid.uuid4().hex)
         sim, lease = run_logged([sys.executable, ROOT / "tools/sim.py", profile.path],
                                 f"{plan['stem']}-part{number:03}-encode", handoff=handoff)
         if lease is None:
             raise RuntimeError("SIM exited without its completion lease")
         try:
-            pack, _ = run_logged(["make", "moviepack", f"CONFIG={profile.path}"],
-                                  f"{plan['stem']}-part{number:03}-pack")
+            import build_disc
+            build_disc.build(profile.path, pack_only=True)
+            pack = {"stage": "pack", "profile": str(profile.path), "exit_code": 0}
             import player_constants
             folder = ROOT / profile.artifact_dir
             with (folder / "HEADER.DAT").open("rb") as stream:

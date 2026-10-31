@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -77,10 +78,10 @@ class TmpfsWorkspaceTests(unittest.TestCase):
                 required_bytes=0,
                 input_paths=[source],
                 command=[
-                    "sh", "-c",
-                    "test \"$(find \"$1\" -name '*.json' | wc -l)\" -eq 2 "
-                    "&& cp \"$2\" \"$3\"",
-                    "sh",
+                    sys.executable, "-c",
+                    "import pathlib, shutil, sys; "
+                    "assert len(list(pathlib.Path(sys.argv[1]).glob('*.json'))) == 2; "
+                    "shutil.copyfile(sys.argv[2], sys.argv[3])",
                     str(workspace.ensure_root() / "leases"),
                     str(source),
                     "{output}",
@@ -97,9 +98,10 @@ class TmpfsWorkspaceTests(unittest.TestCase):
                 key="profile-abc",
                 required_bytes=0,
                 command=[
-                    "sh", "-c",
-                    "test -n \"$1\" && printf recorded > \"$1/capture.mkv\"",
-                    "sh", "{output}",
+                    sys.executable, "-c",
+                    "import pathlib, sys; "
+                    "pathlib.Path(sys.argv[1], 'capture.mkv').write_text('recorded')",
+                    "{output}",
                 ],
             )
             self.assertEqual(
@@ -127,8 +129,8 @@ class TmpfsWorkspaceTests(unittest.TestCase):
             new = root / "artifacts" / "new"
             old.mkdir()
             new.mkdir()
-            os.utime(old, ns=(1, 1))
-            os.utime(new, ns=(2, 2))
+            os.utime(old, (1_000_000_000, 1_000_000_000))
+            os.utime(new, (2_000_000_000, 2_000_000_000))
             usage = shutil._ntuple_diskusage
             with patch.object(
                     workspace.shutil, "disk_usage",
@@ -149,8 +151,8 @@ class TmpfsWorkspaceTests(unittest.TestCase):
             new = root / "artifacts" / "new"
             old.mkdir()
             new.mkdir()
-            os.utime(old, ns=(1, 1))
-            os.utime(new, ns=(2, 2))
+            os.utime(old, (1_000_000_000, 1_000_000_000))
+            os.utime(new, (2_000_000_000, 2_000_000_000))
             usage = shutil._ntuple_diskusage
             with (
                 patch.object(

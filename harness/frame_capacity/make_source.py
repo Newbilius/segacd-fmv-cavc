@@ -3,6 +3,7 @@
 
 import argparse
 from fractions import Fraction
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -11,6 +12,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 import av_config
 import cavc_routing
+
+
+def toml_string(value: str | Path) -> str:
+    """Quote a path as a TOML basic string, including Windows backslashes."""
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def main():
@@ -65,7 +71,7 @@ def main():
     args.profile.write_text(f'''schema_version = 5
 
 [source]
-path = "{source}"
+path = {toml_string(source)}
 fps = "{args.fps}"
 duration = "{duration:.12f}"
 sar = "32:35"

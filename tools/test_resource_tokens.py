@@ -63,6 +63,15 @@ class ResourceTokenTests(unittest.TestCase):
             self.assertTrue(nested.reentrant)
             self.assertEqual(nested.count, 0)
 
+    def test_multiple_inherited_stem_markers_are_reentrant(self) -> None:
+        stems = ("media-source", "artifact-path:C:/repo/out/Movie")
+        with tempfile.TemporaryDirectory() as tmp, self.env(Path(tmp)):
+            env = resource_tokens.held_stems_environment(stems)
+            with resource_tokens.acquire_stems(stems):
+                with patch.dict(os.environ, env, clear=False):
+                    with resource_tokens.acquire_stems(tuple(reversed(stems))):
+                        pass
+
     def test_requested_workers_honor_capacity_override_and_stage_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, self.env(Path(tmp)):
             self.assertEqual(resource_tokens.requested_cpu_workers(), 2)

@@ -147,9 +147,15 @@ Python/NumPy fallback. A live CUDA parent requires spawned loader processes.
 Read `CONFIG.md` for CPU/GPU/EMU tokens and shared resource roots. Separate
 workspaces sharing one GPU need the same explicit `SEGACD_RESOURCE_ROOT`.
 
-The encoder/storage harness targets POSIX systems. Emulator/Xvfb and burner
-harnesses have Linux dependencies; do not claim native Windows support. Check
-host device access before treating sandbox-only CUDA failure as a broken driver.
+The encoder/storage harness targets POSIX systems. The native Windows
+PowerShell CLI has passed full-source CPU/CUDA encode, single-disc and
+multipart ISO production on one host; cross-platform equivalence, clean-machine
+bootstrap, peak resource measurement, and hosted Windows CI qualification
+remain open. Keep the support status aligned with
+`harness/windows_port/README.md`; do not generalize one host's qualification
+to every Windows environment. Emulator/Xvfb and burner harnesses have Linux
+dependencies. Check host device access before treating sandbox-only CUDA
+failure as a broken driver.
 
 ## Recording and publication
 

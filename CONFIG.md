@@ -45,6 +45,9 @@ CLI values override their corresponding environment values. The legacy
 accepted. The wrapper exports TMPDIR/TMP/TEMP for child programs. Explicit
 relative roots resolve from the caller's working directory. Existing build
 staging and disc output paths remain repository-relative.
+On Windows, `tools/python.ps1` and `tools/cavc.ps1` apply runtime settings only
+to child processes; they leave the calling PowerShell session unchanged, so
+one invocation's CLI options do not leak into later commands.
 
 Use a real disk for scratch to reduce physical RAM demand in disk mode. Array
 pages can be reclaimed after flush; pattern histories, Python objects and
@@ -56,15 +59,23 @@ a forcibly killed job may leave `cavc-arrays-*` files for manual cleanup.
 
 When jobs use different workspaces but share a GPU/CPU/emulator pool, give them
 the same explicit `SEGACD_RESOURCE_ROOT`; locks in separate roots cannot
-coordinate. Resource coordination uses POSIX file locks. Linux-specific quota
-and memory probes are optional; the storage harness records unavailable fields
+coordinate. Resource coordination uses native cross-process file locks on POSIX
+and Windows. Linux-specific quota and memory probes are optional; the storage harness records unavailable fields
 as empty. See `harness/runtime_storage/README.md` for measurement semantics.
+
+The native Windows conversion CLI uses `tools/python.ps1` and accepts the same
+workspace, scratch, and array-storage options. Run `tools/cavc.ps1 doctor` to
+inspect dependencies and available storage. CPU/CUDA selection and current
+Windows qualification status are documented in `README.md` and
+`harness/windows_port/README.md`.
 
 ## Workstation concurrency
 
 Concurrency controls change workstation scheduling, not encoded decisions.
-`tools/resource_tokens.py` implements cross-process `flock` tokens and one
-exclusive lock per media `<stem>`.
+`tools/resource_tokens.py` implements cross-process file-lock tokens, one
+exclusive lock per media `<stem>`, and a lock for each profile's build-output
+path. Windows normalizes output-path case so profiles that differ only by case
+cannot write the same files concurrently.
 
 | Name | Default | Meaning |
 |---|---:|---|
@@ -687,6 +698,7 @@ CLI値が対応する環境変数より優先されます。`SEGACD_TMPFS_ROOT` 
 受け入れるため `SEGACD_TMPFS_ALLOW_NON_TMPFS` は不要です。wrapperは子program向けに
 TMPDIR/TMP/TEMPも設定します。明示した相対rootは呼び出し元のworking directoryから
 解決します。build stagingとdiscの出力先はrepositoryからの相対pathを維持します。
+Windows native launchersはこれらの値を子processにだけ設定し、呼び出し元のPowerShell sessionは変更しません。そのため、前回のCLI optionが次のcommandに残ることはありません。
 
 disk modeで物理RAMを節約するにはscratchに実ディスクを指定してください。flush済みの
 配列pageは回収できますが、pattern履歴、Python object、GPU割り当てはメモリを使います。
@@ -697,15 +709,21 @@ workspaceを指定してください。数値配列は正常終了時に削除�
 
 異なるworkspaceのjobが同じGPU/CPU/emulator poolを使うときは、共通の
 `SEGACD_RESOURCE_ROOT` を明示してください。別rootのlock同士は協調できません。
-resource制御はPOSIX file lockを使用します。Linux専用のquota・memory probeは任意で、
-storage harnessは取得できない項目を空欄にします。計測値の意味は
+resource制御はPOSIX/LinuxとWindowsのnative cross-process file lockを使用します。
+Linux専用のquota・memory probeは任意で、storage harnessは取得できない項目を空欄にします。計測値の意味は
 `harness/runtime_storage/README.md` を参照してください。
+
+Windows native conversion CLIは `tools/python.ps1` を使い、同じworkspace、scratch、
+array-storage optionを受け付けます。依存関係と保存領域は `tools/cavc.ps1 doctor` で確認できます。
+CPU/CUDAの選択方法とWindowsでのqualification状況は `README.md` と
+`harness/windows_port/README.md` を参照してください。
 
 ## Workstation concurrency
 
 concurrency controlはworkstation上のscheduleだけを変え、encode decisionは変えません。
-`tools/resource_tokens.py` はprocess間 `flock` tokenと
-media `<stem>` ごとのexclusive lockを実装します。
+`tools/resource_tokens.py` はprocess間file-lock token、media `<stem>`ごとのexclusive lock、profile build-output pathのlockを実装します。
+Windowsではoutput pathのcaseをnormalizeし、
+caseだけが異なるprofileが同じfileへ同時に書き込まないようにします。
 
 | Name | default | 意味 |
 |---|---:|---|

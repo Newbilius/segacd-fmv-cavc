@@ -28,6 +28,8 @@ MAX_MULTIPART_PARTS = 64
 ARTIFACT_ROOT = Path("out")
 TEMP_ROOT = Path("tmp")
 _ARTIFACT_STEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_WINDOWS_RESERVED_STEM_RE = re.compile(
+    r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", re.IGNORECASE)
 
 # Compatibility names for player/tooling imports.  The fixed values live in
 # av_config with the other shared hardware resources.
@@ -163,7 +165,13 @@ class EncodeProfile:
 
         from cbr_paths import sim_work_dir
 
+        # The selected device is a runtime identity input for the managed
+        # output directory. Build and pack tools resolve the profile again
+        # after the CLI has selected CPU/CUDA, so carry that one runtime value
+        # through or they will look for a different completed simulation.
         env: dict[str, str] = {}
+        if "CBRSIM_DEVICE" in os.environ:
+            env["CBRSIM_DEVICE"] = os.environ["CBRSIM_DEVICE"]
         apply_profile_env(self, env)
         return sim_work_dir(env)
 
@@ -185,6 +193,13 @@ class EncodeProfile:
             raise ValueError(
                 f"{self.path}: TOML filename stem must match "
                 "[A-Za-z0-9][A-Za-z0-9._-]*")
+        if os.name == "nt" and len(stem) > 240:
+            raise ValueError(
+                f"{self.path}: Windows artifact filename stem is {len(stem)} "
+                "characters; the maximum is 240 to leave room for disc suffixes")
+        if os.name == "nt" and _WINDOWS_RESERVED_STEM_RE.fullmatch(stem):
+            raise ValueError(
+                f"{self.path}: {stem!r} is a reserved Windows artifact filename stem")
         return stem
 
     @property
@@ -196,6 +211,17 @@ class EncodeProfile:
             self.data["video"]["width"],
             self.data["video"]["height"],
         )
+
+    @property
+    def output_lock_stem(self) -> str:
+        """Lock identity for files derived from this profile filename."""
+        output = Path(__file__).resolve().parents[1] / ARTIFACT_ROOT / self.artifact_stem
+        return "artifact-path:" + os.path.normcase(str(output.resolve()))
+
+    @property
+    def lock_stems(self) -> tuple[str, str]:
+        """Media-cache and named-output locks held during conversion/build."""
+        return self.sim_stem, self.output_lock_stem
 
     @property
     def artifact_dir(self) -> Path:
