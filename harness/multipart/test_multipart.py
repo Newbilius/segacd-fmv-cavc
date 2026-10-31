@@ -84,6 +84,29 @@ class MultipartTests(unittest.TestCase):
                     self.assertEqual(reused["stem"], plan["stem"])
                     self.assertEqual([p.path.read_bytes() for p in profiles], originals)
 
+    def test_exact_count_uses_master_and_raw_filters_before_profile_range(self):
+        # A timestamp-changing custom filter doubles the output timeline. The
+        # count must use that timeline, verify raw/master agreement, and leave
+        # the profile's half-open range for the plan builder to apply once.
+        base = encode_config.load_profile(ROOT/"profiles/sonic-jam-op.toml")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root/"source.mp4"
+            subprocess.run([
+                "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                "color=c=blue:s=320x224:r=15:d=0.4", "-an", "-c:v", "libx264",
+                "-pix_fmt", "yuv420p", str(source)], check=True)
+            data = {"schema_version": 5, **base.data,
+                    "source": {**base.data["source"], "path": str(source),
+                               "duration": "0.4", "start_frame": 2, "end_frame": 8},
+                    "video": {**base.data["video"], "master_filter": "setpts=2*PTS",
+                              "raw_filter": "setpts=2*PTS"}}
+            profile_path = root/"profile.toml"
+            profile_path.write_text(multipart.toml_text(data), encoding="utf-8")
+            profile = encode_config.load_profile(profile_path)
+            with patch.object(multipart, "ROOT", root):
+                self.assertEqual(multipart.count_frames(profile, "custom-filter"), 24)
+
     @unittest.skipUnless(shutil.which("genisoimage") or shutil.which("mkisofs"), "ISO builder unavailable")
     def test_iso_verifier_rejects_directory_overflow_and_changed_payload(self):
         # Read a real ISO independently of its writer before mutating it.
@@ -146,6 +169,15 @@ class MultipartTests(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
         self.assertIn("1-based", result.stderr)
+
+    def test_automatic_part_count_boundaries_and_capacity(self):
+        for frames, expected in ((65534, 1), (65535, 1), (65536, 2),
+                                 (131070, 2), (131071, 3)):
+            with self.subTest(frames=frames):
+                self.assertEqual(multipart.automatic_part_count(frames), expected)
+        self.assertEqual(multipart.automatic_part_count(64 * 65535), 64)
+        with self.assertRaisesRegex(ValueError, "maximum is 64"):
+            multipart.automatic_part_count(64 * 65535 + 1)
 
     def test_fractional_rate_parts_reconstruct_actual_ffmpeg_frames(self):
         # Unique frame colors expose loss, duplication, or a timestamp reset.

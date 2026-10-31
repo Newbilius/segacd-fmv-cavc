@@ -31,6 +31,7 @@
 import json
 import os
 import sys
+import subprocess
 import time
 import math
 import dataclasses
@@ -67,6 +68,7 @@ import cavc_routing  # noqa: E402
 import wordbuf_ring  # noqa: E402
 import sim_artifact_cache  # noqa: E402
 import source_range  # noqa: E402
+import source_inspection  # noqa: E402
 import tmpfs_workspace  # noqa: E402
 import upgrade_planner  # noqa: E402
 from array_storage import ArrayStorage  # noqa: E402
@@ -1401,12 +1403,14 @@ def main(demoted_fade_anchors=frozenset(), arrays=None):
             run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                  *ffmpeg_threads,
                  "-ss", "0", "-t", DURATION, "-i", SRC,
+                 "-map", "0:v:0",
                  "-vf", source_range.video_filter(DEDITHER_VF, FPS_STR, SOURCE_RANGE),
                  str(master_dir / "%05d.png")])
             print(f"extracting raw comparison frames ({W}x{H} raster) ...")
             run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                  *ffmpeg_threads,
                  "-ss", "0", "-t", DURATION, "-i", SRC,
+                 "-map", "0:v:0",
                  "-vf", source_range.video_filter(RAW_VF, FPS_STR, SOURCE_RANGE),
                  str(raw_dir / "%05d.png")])
             print(f"extracting audio ({AUDIO_LABEL}) ...")
@@ -1414,10 +1418,22 @@ def main(demoted_fade_anchors=frozenset(), arrays=None):
                 print(f"  audio filter: {AUDIO_AF}")
             for old in OUT.glob("audio_*.wav"):     # 別形式の残骸を除去(REUSE時の取り違え防止)
                 old.unlink()
+            audio_probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "a:0",
+                 "-show_entries", "stream=index", "-of", "csv=p=0", SRC],
+                check=True, capture_output=True, text=True, encoding="utf-8")
+            if audio_probe.stdout.strip():
+                audio_input = ["-ss", "0", "-t", DURATION, "-i", SRC,
+                               "-map", "0:a:0", "-vn"]
+                audio_filter = ["-af", source_inspection.aligned_audio_filter(
+                    AUDIO_AF, DURATION)]
+            else:
+                print("source has no audio stream; generating aligned silence")
+                audio_input = ["-f", "lavfi", "-t", DURATION, "-i",
+                               f"anullsrc=r={AUDIO_RATE}:cl=mono"]
+                audio_filter = []
             run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                 *ffmpeg_threads,
-                 "-ss", "0", "-t", DURATION, "-i", SRC,
-                 "-vn", *(["-af", AUDIO_AF] if AUDIO_AF else []),
+                 *ffmpeg_threads, *audio_input, *audio_filter,
                  "-ac", "1", "-ar", str(AUDIO_RATE), "-acodec", AUDIO_FFCODEC,
                  str(OUT / AUDIO_FILE)])
             if SOURCE_RANGE is not None:
@@ -5239,6 +5255,17 @@ def main(demoted_fade_anchors=frozenset(), arrays=None):
         int(transfer_tiles_log[0])
         + int(physical_schedule["prebuf_pat"])
     )
+    # The boot prebuffer is sector-sized. If the final payload is shorter than
+    # that rounded extent, the excess is padding in the last sector, not a
+    # missing raw-funding event. Keep explicit non-raw entries in this trace so
+    # the cursor compares physical bytes with logical pattern demand correctly.
+    try:
+        prebuffer_padding = stream_schedule.prebuffer_padding_patterns(
+            physical_schedule)
+    except ValueError as exc:
+        raise AssertionError(
+            "Prg prebuffer padding exceeds one sector; schedule rounding changed") from exc
+    prg_raw_flags.extend(False for _ in range(prebuffer_padding))
     word_flag_cursors = [
         (
             int(ring_plan.boot_patterns[parity])
@@ -5284,7 +5311,17 @@ def main(demoted_fade_anchors=frozenset(), arrays=None):
     if prg_flag_cursor != len(prg_raw_flags):
         raise AssertionError(
             "physical Prg schedule did not consume the complete raw-funding "
-            f"trace ({prg_flag_cursor}/{len(prg_raw_flags)})")
+            f"trace ({prg_flag_cursor}/{len(prg_raw_flags)}; "
+            f"body_payload_patterns={int(body_payload_bytes.sum()) // PATTERN_BYTES}, "
+            f"initial_patterns={int(transfer_tiles_log[0]) + int(physical_schedule['prebuf_pat'])}, "
+            f"frame0_visible={len(ring_transfer_orders_log[0])}, "
+            f"frame0_prefetch={sum(bool(item[1]) for item in ring_prefetch_log[0])}, "
+            f"frame0_transfer_tiles={int(transfer_tiles_log[0])}, "
+            f"timed_prg_loads={int(np.asarray(prg_loads_log, np.int64)[1:].sum())}, "
+            f"scheduled_prg_patterns={int(physical_schedule['M'])}, "
+            f"prebuffer_patterns={int(physical_schedule['prebuf_pat'])}, "
+            f"Prg_raw_flags={sum(prg_raw_flags)}, "
+            f"Word_raw_flags={[sum(flags) for flags in word_raw_flags]})")
     if ring_enabled and any(
             cursor != len(word_raw_flags[parity])
             for parity, cursor in enumerate(word_flag_cursors)):

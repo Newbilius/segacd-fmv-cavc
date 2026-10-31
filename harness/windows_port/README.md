@@ -1,5 +1,9 @@
 # Native Windows CLI port plan
 
+The planned direct-video interface, CLI configuration, and automatic multipart
+selection are described in [CLI_PLAN.md](CLI_PLAN.md). That document describes
+future work; the acceptance evidence below describes the existing port.
+
 This document is the implementation plan and acceptance checklist for the
 native Windows conversion CLI. Its commands and components are being added;
 their presence does not establish that the complete Windows encode-to-ISO
@@ -807,6 +811,72 @@ status above before relying on them for a production encode:
 `convert` coordinates both. `multipart` retains existing part-selection,
 completion authentication, and resume semantics. CLI values continue to follow
 the profile/runtime precedence defined by the existing project configuration.
+
+### Direct-source CLI qualification
+
+A one-second 15 FPS CPU `convert` from a Unicode/space-containing path built
+`out/cli-plan-flat_release.iso`; missing source audio became aligned silence.
+Stage receipts are `logs/windows-cli-encode-20261031T122910109899Z.json` and
+`logs/windows-cli-disc-20261031T122912627688Z.json`. Running `convert` again on
+the frozen profile reused the same 15-frame encode (`sim artifact cache: hit`)
+and rebuilt the disc; receipts are
+`logs/windows-cli-encode-20261031T122921850871Z.json` and
+`logs/windows-cli-disc-20261031T122922272825Z.json`.
+
+The same source was exported as `tmp/cli-plan-multipart.toml` with two parts.
+Separate `tools/multipart.py --part 1` and `--part 2` invocations encoded ranges
+`[0,8)` and `[8,15)`. A final invocation reused both authenticated parts and
+built `out/cli-plan-multipart-multipart2-cabc7fce3d17_release.iso`. Receipts are
+under `logs/multipart-cli-plan-multipart-multipart2-cabc7fce3d17-*`. The
+independent ISO reader verified all staged payloads in both disc images. This
+qualifies CLI integration and multipart resume for the fixture; it does not
+qualify arbitrary source content.
+
+The latest direct-source `convert` was repeated as `cli-plan-final3`. Its plan
+reported the selected stream, source timing, SAR, rotation, and the 15-frame
+exact count. It reused the matching encode, rebuilt the release ISO/CUE with
+the native player tools, and independently verified the ISO payloads. Its
+disc receipt is `logs/windows-cli-disc-20261031T124651339943Z.json`; the
+exact-count log is `logs/source-count-20261031T124650849746Z.log`.
+
+The direct `convert --parts 2` route was also exercised on the same fixture.
+It produced ranges `[0,8)` and `[8,15)`, built
+`out/cli-plan-cli-multipart-multipart2-cabc7fce3d17_release.iso`, then reused
+both authenticated parts on a second invocation. An independent ISO reader
+verified the payloads. The matching encode receipts are
+`logs/multipart-cli-plan-cli-multipart-multipart2-cabc7fce3d17-part001-encode-20261031T124230620274Z.json`
+and
+`logs/multipart-cli-plan-cli-multipart-multipart2-cabc7fce3d17-part002-encode-20261031T124231824158Z.json`.
+The second conversion's final assembly log is
+`logs/multipart-cli-plan-cli-multipart-multipart2-cabc7fce3d17-assemble-20261031T124658440294Z.log`.
+A direct `encode --parts 2` run completed both parts and skipped disc assembly,
+as confirmed by its `encode-only requested, disc build skipped` log message
+and the absence of a corresponding ISO. Its part receipts are
+`logs/multipart-cli-plan-cli-encode-only-multipart2-cabc7fce3d17-part001-encode-20261031T124247140728Z.json`
+and
+`logs/multipart-cli-plan-cli-encode-only-multipart2-cabc7fce3d17-part002-encode-20261031T124248314609Z.json`.
+
+Frame counting and extraction both explicitly select the first video stream
+(`0:v:0`). A two-video fixture with different durations verified a 15-frame
+count matched the frames extracted from that selected stream.
+
+A one-second moving `testsrc2` source at unchanged 15/380 settings initially
+exposed a false raw-funding failure: the sector-rounded boot prebuffer had 37
+padding patterns beyond the logical payload, but the audit trace counted them
+as missing source patterns. The trace now records that tail as non-raw sector
+padding. The same 15-frame source completed sim, pack, player build, and ISO/CUE;
+its encode/disc receipts are
+`logs/windows-cli-encode-20261031T125206146577Z.json` and
+`logs/windows-cli-disc-20261031T125214995125Z.json`. An independent ISO reader
+verified the payload. The earlier 48-frame moving fixture also completed at its
+unchanged 24 FPS / `2:180,3:230` settings after this correction.
+
+A one-second 640x360 MP4 with an audio stream was converted at explicit
+30 FPS / cold cap 200 to exercise non-silent audio and the source's 24 FPS
+metadata. It completed encoding and native disc build as
+`out/cli-plan-sample-real_release.iso`; both payloads were independently
+verified. Receipts are `logs/windows-cli-encode-20261031T125038159977Z.json`
+and `logs/windows-cli-disc-20261031T125051321722Z.json`.
 
 ## Implementation order and final acceptance
 

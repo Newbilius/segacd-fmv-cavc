@@ -69,6 +69,64 @@ inspect dependencies and available storage. CPU/CUDA selection and current
 Windows qualification status are documented in `README.md` and
 `harness/windows_port/README.md`.
 
+Direct-source `encode` and `convert` accept a video path without a profile.
+They default to 320x224 with `fit = "pad"`, 15 FPS, cold cap 380, `mosaic-gm`,
+no added audio gain, and the shared resize/dither/denoise defaults. `--fps` and
+`--cold-cap` form one required pair when either is supplied. With `--source`
+and `--config`, the profile supplies other settings while the explicit source
+owns `source.path`. `--set section.key=TOML_LITERAL` uses TOML scalar/array
+syntax and passes through the same schema validation as profile data. Direct
+input defaults to automatic splitting at no more than 65,535 frames per part;
+manual `--parts N` is checked against the existing format capacity. Suggested
+starting pairs are 15/380, 24 or 24000/1001 with `2:180,3:230`, and 30 or
+30000/1001 with 200. Treat the latter pairs as candidates for source/playback
+checks, not general hardware qualifications. The frame counter decodes the
+selected source and can take as long as the source itself.
+
+Common named options map to `source.fps` + `encoder.cold_cap`, `video.width`,
+`video.height`, `video.fit`, `source.duration`, `source.start_frame` +
+`source.end_frame`, and `source.audio_filter`. Repeatable `--set` covers every
+other TOML field accepted by the shared profile schema:
+
+| TOML section | Fields available through `--set` |
+|---|---|
+| `[source]` | `path`, `fps`, `duration`, `start_frame`, `end_frame`, `sar`, `audio_filter`, `preprocess.endpoint_snap.black_max`, `preprocess.endpoint_snap.white_min`, `preprocess.auto_range` |
+| `[video]` | `active_tiles`, `resize_filter`, `master_denoise`, `output_dither`, `master_filter`, `raw_filter` |
+| `[output]` | `directory`, `reuse`, `emit_decisions` |
+| `[encoder]` | `raw_prefetch`, `cram_quality_priority_search_frames` |
+| `[palette]` | `algorithm` |
+| `[analysis]` | `source_canvas`, `source_par`, `source_spec`, `tail_seconds` |
+| `[multipart]` | `parts` |
+| `[youtube]` | `analysis_title`, `playback_title`, `source_label`, `source_label_ja`, `source_url`, `source_license`, `source_license_ja`, `source_license_url` |
+| `[release]` | `title`, `title_ja` |
+| `[comparison]` | `badge`, `title`, `audio_panel`, `audio_intro_panel`, `audio_note`, `output`, `duration`, `tail_seconds`, `youtube`, and `panels.<name>.<field>` where panel fields are `label`, `short_label`, `slot`, `aperture`, `pixel_aspect`, `spec`, `placeholder`, `path`, `crop`, `pad`, `input_fps`, `resize`, `fmv_start`, `lead`. |
+
+`source.path` is accepted for profile input; in direct-source mode the input
+argument owns that field. Runtime options (`--device`, region, storage roots, `--force`, and `--debug`)
+are separate from encode settings. A field must be assigned once: repeating a
+named option and its `--set` path is an error.
+
+## Workstation concurrency
+
+直接動画CLIは、320x224、`fit = "pad"`、15 FPS、cold cap 380、`mosaic-gm`、音声ゲインなし、共通のresize/dither/denoise設定を初期値にします。`--fps`と`--cold-cap`は必ず一緒に指定します。`--source`と`--config`を併用すると、profileが他の設定を提供し、指定したsourceが`source.path`を決めます。`--set section.key=TOML_LITERAL`はTOMLのscalar/array構文を使い、profileと同じschema検証を通ります。直接入力はpartあたり最大65,535 frameの自動分割が既定です。`--parts N`で手動指定した場合も既存format上限を検証します。推奨開始候補は15/380、24または24000/1001 FPSと`2:180,3:230`、30または30000/1001 FPSと200です。後者はsourceとplaybackで確認する候補であり、一般的なhardware適合保証ではありません。frame数の正確な計測はsource全体をdecodeする場合があります。
+
+名前付きoptionは`source.fps` + `encoder.cold_cap`、`video.width`、`video.height`、`video.fit`、`source.duration`、`source.start_frame` + `source.end_frame`、`source.audio_filter`に対応します。繰り返し指定できる`--set`では、共有profile schemaが受け付けるその他のTOML fieldも指定できます。
+
+| TOML section | `--set`で使えるfield |
+|---|---|
+| `[source]` | `path`、`fps`、`duration`、`start_frame`、`end_frame`、`sar`、`audio_filter`、`preprocess.endpoint_snap.black_max`、`preprocess.endpoint_snap.white_min`、`preprocess.auto_range` |
+| `[video]` | `active_tiles`、`resize_filter`、`master_denoise`、`output_dither`、`master_filter`、`raw_filter` |
+| `[output]` | `directory`、`reuse`、`emit_decisions` |
+| `[encoder]` | `raw_prefetch`、`cram_quality_priority_search_frames` |
+| `[palette]` | `algorithm` |
+| `[analysis]` | `source_canvas`、`source_par`、`source_spec`、`tail_seconds` |
+| `[multipart]` | `parts` |
+| `[youtube]` | `analysis_title`、`playback_title`、`source_label`、`source_label_ja`、`source_url`、`source_license`、`source_license_ja`、`source_license_url` |
+| `[release]` | `title`、`title_ja` |
+| `[comparison]` | `badge`、`title`、`audio_panel`、`audio_intro_panel`、`audio_note`、`output`、`duration`、`tail_seconds`、`youtube`、および`panels.<name>.<field>`。panel fieldは`label`、`short_label`、`slot`、`aperture`、`pixel_aspect`、`spec`、`placeholder`、`path`、`crop`、`pad`、`input_fps`、`resize`、`fmv_start`、`lead`。 |
+
+`source.path`はprofile入力で指定できます。直接入力ではinput argumentがこのfieldを決めます。`--device`、region、storage root、`--force`、`--debug`はruntime optionで、encode設定とは別です。同じfieldをnamed optionと`--set`の両方で指定するとerrorになります。
+
 ## Workstation concurrency
 
 Concurrency controls change workstation scheduling, not encoded decisions.

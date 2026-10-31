@@ -20,12 +20,14 @@ import cavc_routing
 import encode_config
 import resource_tokens
 import sim_artifact_cache
+import source_inspection
 import tmpfs_workspace
 import process_tree
 from source_range import frame_range
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_PARTS = encode_config.MAX_MULTIPART_PARTS
+AUTO_PART_FRAMES = 65535
 PACKED_FILES = ("HEADER.DAT", "BODY.DAT", "MOVIE.DAT", "paltab.bin", "palidx.bin")
 
 
@@ -71,6 +73,17 @@ def split_frames(frames, parts, offset=0):
         result.append((start, end))
         start = end
     return result
+
+
+def automatic_part_count(frames):
+    """Minimum part count satisfying the automatic 65,535-frame policy."""
+    if type(frames) is not int or frames < 2:
+        raise ValueError("automatic splitting requires at least two output frames")
+    parts = (frames + AUTO_PART_FRAMES - 1) // AUTO_PART_FRAMES
+    if parts > MAX_PARTS:
+        raise ValueError(
+            f"{frames} output frames require {parts} parts; maximum is {MAX_PARTS}")
+    return parts
 
 
 def toml_text(data):
@@ -163,8 +176,8 @@ def run_logged(command, name, *, env=None, handoff=None):
         raise
 
 
-def input_identity(profile, parts):
-    environment = dict(os.environ)
+def input_identity(profile, parts, *, environ=None):
+    environment = dict(os.environ if environ is None else environ)
     encode_config.apply_profile_env(profile, environment)
     return {"schema": 1, "parts": parts, "encoder": analysis_logs.encoder_version(),
             "source": sim_artifact_cache.source_identity(profile.data["source"]["path"]),
@@ -174,20 +187,44 @@ def input_identity(profile, parts):
 def count_frames(profile, name):
     source = profile.section("source")
     with resource_tokens.acquire_tokens("cpu", count=1):
-        record, _ = run_logged([
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-threads", "1",
-            "-filter_threads", "1", "-t", str(source["duration"]), "-i", source["path"],
-            "-map", "0:v:0", "-vf", f"fps={source['fps']}", "-an",
-            "-progress", "pipe:1", "-nostats", "-f", "null", "-",
-        ], name + "-count")
-    counts = [int(line.split("=", 1)[1]) for line in Path(record["log"]).read_text(encoding="utf-8").splitlines()
-              if line.startswith("frame=")]
-    if not counts or counts[-1] < 2:
-        raise ValueError("source has fewer than two output frames")
-    return counts[-1]
+        geometry = source_inspection.probe(source["path"])
+        video = profile.section("video")
+        from video_geometry import source_filter, raw_filter, parse_ratio, endpoint_snap_filter
+        sar = source.get("sar") or geometry["display_sar"] or "1:1"
+        sar_num, sar_den = parse_ratio(sar)
+        common = dict(src_sar_num=sar_num, src_sar_den=sar_den,
+                      fit=video.get("fit", "pad"),
+                      resize_filter=video.get("resize_filter", "lanczos"))
+        master_vf = video.get("master_filter") or source_filter(
+            int(video["width"]), int(video["height"]),
+            geometry["display_width"], geometry["display_height"],
+            denoise=bool(video.get("master_denoise", True)), **common)
+        raw_vf = video.get("raw_filter") or raw_filter(
+            int(video["width"]), int(video["height"]),
+            geometry["display_width"], geometry["display_height"], **common)
+        preprocess = source.get("preprocess", {})
+        snap = preprocess.get("endpoint_snap", {})
+        prefix = endpoint_snap_filter(snap.get("black_max", -1),
+                                      snap.get("white_min", 256))
+        if prefix:
+            master_vf = f"{prefix},{master_vf}"
+            raw_vf = f"{prefix},{raw_vf}"
+        print(f"Counting exact output frames for {source['path']} (FFmpeg decode; may take the full source duration)")
+        total = source_inspection.count_output_frames(
+            source["path"], str(source["fps"]), duration=str(source["duration"]),
+            video_filter=master_vf)
+        raw_total = (source_inspection.count_output_frames(
+            source["path"], str(source["fps"]), duration=str(source["duration"]),
+            video_filter=raw_vf)
+            if video.get("master_filter") or video.get("raw_filter") else total)
+        if raw_total != total:
+            raise ValueError(
+                f"master and raw video filters produce different frame counts "
+                f"({total} vs {raw_total}); align their timing")
+        return total
 
 
-def prepare(profile, parts):
+def prepare(profile, parts, known_frames=None):
     identity = input_identity(profile, parts)
     stem = f"{profile.artifact_stem}-multipart{parts}-{token(identity)[:12]}"
     validate_windows_part_stem(stem)
@@ -198,7 +235,7 @@ def prepare(profile, parts):
         if plan.get("identity") != identity:
             raise ValueError("multipart plan identity differs")
     else:
-        total = count_frames(profile, stem)
+        total = known_frames if known_frames is not None else count_frames(profile, stem)
         bounds = frame_range(profile.section("source")) or (0, total)
         if bounds[1] > total:
             raise ValueError("profile source range exceeds decoded source frames")
@@ -285,11 +322,15 @@ def parse_args(argv=None):
     parser.add_argument("--part", type=int, metavar="K",
                         help="Encode only part K (1-based); omission completes all parts")
     parser.add_argument("--build-only", action="store_true", help="Build from already completed parts")
+    parser.add_argument("--encode-only", action="store_true", help="Encode/reuse parts without building a disc")
+    parser.add_argument("--known-frames", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--debug", action="store_true", help="Include the playback DEBUG HUD")
     parser.add_argument("--security-region", choices=("jp", "us"), default="jp")
     args = parser.parse_args(argv)
     if args.parts is not None and not 1 <= args.parts <= MAX_PARTS:
         parser.error(f"--parts must be within 1..{MAX_PARTS}")
+    if args.known_frames is not None and args.known_frames < 2:
+        parser.error("--known-frames must be at least 2")
     if args.part is not None and args.part < 1:
         parser.error("--part must be within 1..--parts (1-based)")
     if args.part is not None and args.build_only:
@@ -312,7 +353,7 @@ def main():
     os.chdir(ROOT)
     (ROOT / "logs").mkdir(exist_ok=True)
     with stem_lock(f"multipart-{profile.artifact_stem}-{args.parts}"):
-        plan, profiles = prepare(profile, args.parts)
+        plan, profiles = prepare(profile, args.parts, known_frames=args.known_frames)
         selected = {args.part} if args.part is not None else set(range(1, args.parts+1))
         records = []
         for number, part in enumerate(profiles, 1):
@@ -328,6 +369,9 @@ def main():
             print(f"multipart: ISO deferred; unfinished parts: {', '.join(map(str, missing))}", flush=True)
             if args.build_only:
                 return 2
+            return 0
+        if args.encode_only:
+            print("multipart: all parts complete; encode-only requested, disc build skipped", flush=True)
             return 0
         import multipart_build
         multipart_build.build(plan, profiles, records, debug=args.debug, region=args.security_region)

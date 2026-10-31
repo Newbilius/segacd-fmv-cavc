@@ -9,6 +9,10 @@ Count selection checks cover TOML defaults, CLI overrides, invalid counts and
 part numbers. A six-frame source verifies that moving the same count between
 TOML and CLI preserves generated profile bytes and the reusable plan; it does
 not run the codec encoder.
+The exact count now follows the profile's master filter, output FPS, duration,
+and full-source clock before applying any half-open profile range. If custom
+master/raw filters are present, both are counted and must agree so the raw
+comparison and encoded master cannot silently plan different part boundaries.
 
 ```sh
 tools/python.sh -m unittest discover -s harness/multipart -p 'test_*.py'

@@ -942,3 +942,15 @@ def schedule_payload_ring(
     })
     result.update(delivery_trace)
     return result
+
+
+def prebuffer_padding_patterns(schedule: dict) -> int:
+    """Count sector-rounding slots beyond logical payload in the boot preload.
+
+    The final sector can contain fewer than 64 useful patterns. Its remaining
+    slots are physical padding and must not be matched to raw source demand.
+    """
+    padding = max(0, int(schedule["prebuf_pat"]) - int(schedule["M"]))
+    if padding >= PATTERNS_PER_SECTOR:
+        raise ValueError("prebuffer padding exceeds one sector")
+    return padding

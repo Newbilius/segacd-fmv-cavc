@@ -48,15 +48,30 @@ def endpoint_snap_filter(black_max: int = -1, white_min: int = 256) -> str:
 
 
 def probe_source(src: str) -> tuple[int, int, int, int]:
-    """Return coded width/height and the source sample-aspect ratio."""
+    """Return FFmpeg autorotated display width/height and display SAR."""
     out = subprocess.check_output(
         ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height,sample_aspect_ratio", "-of", "json", src],
-        text=True,
+         "-show_entries", "stream=width,height,sample_aspect_ratio:stream_tags=rotate:stream_side_data=rotation",
+         "-of", "json", src], text=True, encoding="utf-8",
     )
     stream = json.loads(out)["streams"][0]
     sar_num, sar_den = parse_ratio(stream.get("sample_aspect_ratio"))
-    return int(stream["width"]), int(stream["height"]), sar_num, sar_den
+    rotation = 0.0
+    for item in stream.get("side_data_list", []):
+        if "rotation" in item:
+            rotation = float(item["rotation"])
+            break
+    if not rotation:
+        try:
+            rotation = float(stream.get("tags", {}).get("rotate", 0))
+        except (TypeError, ValueError):
+            rotation = 0.0
+    quarter_turn = round(rotation / 90) % 2
+    width, height = int(stream["width"]), int(stream["height"])
+    if quarter_turn:
+        width, height = height, width
+        sar_num, sar_den = sar_den, sar_num
+    return width, height, sar_num, sar_den
 
 
 def probe_size(src: str) -> tuple[int, int]:

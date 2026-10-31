@@ -184,6 +184,16 @@ class BodyDeliveryRateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "within physical"):
             schedule.body_delivery_rate_bps([2049], [2048])
 
+    def test_boot_prebuffer_sector_padding_is_not_logical_raw_demand(self) -> None:
+        physical = schedule.schedule_payload_ring(
+            [0, 1674], [0, 0], fps=30,
+            ring_capacity_patterns=15000,
+            prebuffer_capacity_patterns=12448,
+            frame_sectors=5, fill=True)
+        self.assertEqual(physical["M"], 1674)
+        self.assertEqual(physical["prebuf_pat"], 1728)
+        self.assertEqual(schedule.prebuffer_padding_patterns(physical), 54)
+
     def test_payload_class_split_skips_prebuffer_and_preserves_delivery(self) -> None:
         raw, prg = schedule.split_body_payload_classes(
             [True, False, True, False, True],

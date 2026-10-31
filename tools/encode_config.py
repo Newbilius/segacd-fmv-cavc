@@ -11,10 +11,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
 import tomllib
+from fractions import Fraction
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, MutableMapping
@@ -328,6 +330,24 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
     profile_path = Path(path).expanduser().resolve()
     raw = profile_path.read_bytes()
     data = tomllib.loads(raw.decode("utf-8"))
+    return validate_profile_data(profile_path, data, raw=raw)
+
+
+def validate_profile_data(
+        path: str | os.PathLike[str], data: dict[str, Any], *,
+        raw: bytes | None = None) -> EncodeProfile:
+    """Validate structured profile data using the same rules as TOML loads.
+
+    CLI frontends use this entry point after merging named options and typed
+    ``--set`` values, so they cannot drift from the public profile schema.
+    ``raw`` preserves the source file identity when validating a loaded file;
+    generated configurations hash their deterministic TOML representation.
+    """
+    profile_path = Path(path).expanduser().resolve()
+    if raw is None:
+        raw = json.dumps(data, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode("utf-8")
+    data = dict(data)
     version = data.pop("schema_version", None)
     if version != SCHEMA_VERSION:
         raise ValueError(
@@ -348,6 +368,102 @@ def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
         if missing:
             raise ValueError(
                 f"{profile_path}: missing [{section}] keys: {', '.join(sorted(missing))}")
+    source_data = data["source"]
+    source_path = source_data["path"]
+    if not isinstance(source_path, str) or not source_path.strip():
+        raise ValueError(f"{profile_path}: source.path must be a non-empty string")
+    fps_value = source_data["fps"]
+    if isinstance(fps_value, bool) or not isinstance(fps_value, (str, int, float)):
+        raise ValueError(f"{profile_path}: source.fps must be a positive rational rate")
+    try:
+        fps = Fraction(str(fps_value))
+    except (ValueError, ZeroDivisionError) as exc:
+        raise ValueError(f"{profile_path}: source.fps must be a positive rational rate") from exc
+    if fps <= 0:
+        raise ValueError(f"{profile_path}: source.fps must be a positive rational rate")
+    duration_value = source_data["duration"]
+    if isinstance(duration_value, bool) or not isinstance(duration_value, (str, int, float)):
+        raise ValueError(f"{profile_path}: source.duration must be positive seconds")
+    try:
+        duration = float(duration_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{profile_path}: source.duration must be positive seconds") from exc
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"{profile_path}: source.duration must be positive seconds")
+    type_rules = {
+        "source": {"sar": str, "audio_filter": str},
+        "video": {"width": int, "height": int, "active_tiles": int,
+                  "fit": str, "resize_filter": str, "master_denoise": bool,
+                  "output_dither": str, "master_filter": str, "raw_filter": str},
+        "output": {"directory": str, "reuse": bool, "emit_decisions": bool},
+        "encoder": {"raw_prefetch": bool},
+        "palette": {"algorithm": str},
+        "analysis": {"source_spec": str},
+        "youtube": {key: str for key in ALLOWED["youtube"]},
+        "release": {key: str for key in ALLOWED["release"]},
+    }
+    for section, fields in type_rules.items():
+        values = data.get(section, {})
+        for key, expected_type in fields.items():
+            if key not in values:
+                continue
+            value = values[key]
+            if type(value) is not expected_type:
+                raise ValueError(
+                    f"{profile_path}: {section}.{key} must be "
+                    f"{expected_type.__name__}")
+    for section, key in (("analysis", "tail_seconds"),
+                         ("comparison", "duration"),
+                         ("comparison", "tail_seconds")):
+        value = data.get(section, {}).get(key)
+        if value is not None and (type(value) not in (int, float)
+                                  or not math.isfinite(value) or value < 0):
+            raise ValueError(f"{profile_path}: {section}.{key} must be non-negative seconds")
+    source_par = data.get("analysis", {}).get("source_par")
+    if source_par is not None and (
+            not isinstance(source_par, list) or len(source_par) != 2
+            or any(type(value) is not int or value <= 0 for value in source_par)):
+        raise ValueError(f"{profile_path}: analysis.source_par must be [positive_num, positive_den]")
+    comparison = data.get("comparison", {})
+    if comparison:
+        comparison_types = {
+            "badge": str, "title": str, "audio_panel": str,
+            "audio_intro_panel": str, "output": str,
+            "audio_note": (str, bool), "youtube": dict, "panels": dict,
+        }
+        for key, expected_type in comparison_types.items():
+            if key not in comparison:
+                continue
+            value = comparison[key]
+            if not isinstance(value, expected_type):
+                name = ("string or boolean" if key == "audio_note" else
+                        "table" if expected_type is dict else "string")
+                raise ValueError(f"{profile_path}: comparison.{key} must be a {name}")
+        panel_types = {
+            "label": str, "short_label": str, "slot": str, "placeholder": str,
+            "path": str, "input_fps": str, "resize": str,
+            "aperture": list, "pixel_aspect": list, "spec": (str, list),
+            "crop": list, "pad": list, "fmv_start": (int, float),
+            "lead": (int, float),
+        }
+        for panel_name, panel in comparison.get("panels", {}).items():
+            if not isinstance(panel, dict):
+                raise ValueError(f"{profile_path}: comparison.panels.{panel_name} must be a table")
+            for key, expected_type in panel_types.items():
+                if key not in panel:
+                    continue
+                value = panel[key]
+                valid = isinstance(value, expected_type)
+                if key in {"aperture", "pixel_aspect", "crop", "pad"}:
+                    valid = (isinstance(value, list) and
+                             all(type(item) is int for item in value))
+                elif key == "spec" and isinstance(value, list):
+                    valid = bool(value) and all(isinstance(item, str) for item in value)
+                elif key in {"fmv_start", "lead"}:
+                    valid = type(value) in (int, float) and math.isfinite(value)
+                if not valid:
+                    raise ValueError(
+                        f"{profile_path}: comparison.panels.{panel_name}.{key} has an invalid type")
     from source_range import frame_range
     frame_range(data["source"])
     parts = data.get("multipart", {}).get("parts")
