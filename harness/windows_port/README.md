@@ -343,10 +343,15 @@ YUV420P video and normalized mono 22.05 kHz PCM audio streams. Matching stream
 hashes establish decoded-media equivalence, not equality of the input
 containers.
 
-Remaining acceptance gaps are direct decoded-stream verification against that
-missing Linux source file, a clean-machine dependency bootstrap, hosted Windows
-CI evidence, actual execution of the Linux Make targets, and broader real-source
-coverage across remaining profile/source combinations.
+The recorded historical Linux MP4 remains unavailable for direct decoded-stream
+comparison. The optional full workflow now creates one Linux 16,384-frame MP4,
+passes those exact bytes to Windows, checks normalized decoded video/audio,
+compares every saved decision and numeric trace, and compares all five packed
+files after the Linux Make build. That workflow is implemented but has not run
+on hosted runners yet. Remaining acceptance gaps are hosted Windows/Linux CI
+evidence, clean-machine bootstrap evidence, actual execution of the Linux Make
+targets, and broader real-source coverage across remaining profile/source
+combinations.
 The flat-color source still disables the WordBuf ring after its exact full-run
 preload proof reports `(0, 0)` instead of `(3072,3200)`; the Tears of Steel run
 now provides an active-ring full-source qualification. Do not claim the port
@@ -422,8 +427,13 @@ process, cache, and mapped-workspace checks. A manual dispatch can also select
 `full_linux_make` to generate the canonical 16,384-frame source, run all six CPU
 stages, then execute `make moviepack`, `make movieplay-module`, and
 `make movieplay-internal` against that completed artifact before independently
-checking the ISO against its staged files. This qualification takes longer and
-is opt-in. Windows bootstraps the pinned CPU environment, checks that an
+checking the ISO against its staged files. It then uploads the source and Linux
+comparison artifacts to a dependent Windows job. That job rebuilds a profile
+around the exact downloaded MP4, runs a full CPU `convert`, compares normalized
+video/audio hashes, all saved decisions and numeric fields, the packed
+HEADER/BODY/MOVIE/palette files, and assembled Main/Sub/boot player binaries.
+The long qualification is opt-in. Windows also
+bootstraps the pinned CPU environment, checks that an
 isolated bootstrap preserves the caller's `UV_PROJECT_ENVIRONMENT`, installs
 the hash-pinned official m68k toolchain, assembles and
 links the real Sub extension, and builds the same player matrix from current
@@ -818,8 +828,8 @@ long-source qualification. Linux conversion must remain functional.
 The implementation is present and has passed substantial host qualification,
 but the port remains in progress until the outstanding acceptance evidence near
 the top of this document is closed. In particular, this checkout cannot
-produce hosted CI evidence without publishing the local workflow changes, and
-it does not contain the original Linux-normalized source needed for a strict
-same-input comparison. The current-host environment checks also do not replace
-a clean-machine install. Keep these evidence limits explicit when reporting
-support status.
+produce hosted CI evidence without publishing the local workflow changes. The
+optional full workflow now generates and shares one source for strict
+Linux/Windows comparison, but it has not run. The current-host environment
+checks also do not replace a clean-machine install. Keep these evidence limits
+explicit when reporting support status.

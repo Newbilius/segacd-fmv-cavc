@@ -24,6 +24,9 @@ def main():
     parser.add_argument("--frames", type=int, default=16384)
     parser.add_argument("--fps", type=int, choices=(15, 24, 30), default=24)
     parser.add_argument("--profile", type=Path, required=True)
+    parser.add_argument(
+        "--existing-source", type=Path,
+        help="build a profile around this existing video instead of generating it")
     parser.add_argument("--pattern", choices=("flat", "bars"), default="flat")
     parser.add_argument("--width", type=int, default=av_config.SCREEN_WIDTH)
     parser.add_argument("--height", type=int, default=av_config.SCREEN_HEIGHT)
@@ -33,40 +36,57 @@ def main():
             (args.width, av_config.SCREEN_WIDTH),
             (args.height, av_config.SCREEN_HEIGHT))):
         parser.error("dimensions must be multiples of 8 within the 320x224 aperture")
-    markers = sorted({frame for frame in (
-        0, 1, 32767, 32768, 65534, 65535, 65536,
-        args.frames - 2, args.frames - 1) if 0 <= frame < args.frames})
-    enable = "+".join(f"eq(n,{frame})" for frame in markers)
     duration = float(Fraction(args.frames, args.fps))
     size = f"{args.width}x{args.height}"
     size_tag = "" if size == "320x224" else f"_{size}"
-    name = f"frame_capacity_{args.pattern}_{args.fps}fps_{args.frames}{size_tag}.mp4"
-    pattern = (f"color=c=0x404040:size={size}:rate={args.fps}"
-               if args.pattern == "flat" else f"smptebars=size={size}:rate={args.fps}")
-    marker_w, marker_h = min(32, args.width), min(16, args.height)
-    marker_x = (args.width - marker_w) // 16 * 8
-    marker_y = (args.height - marker_h) // 16 * 8
-    command = [
-        sys.executable, str(ROOT / "tools/tmpfs_workspace.py"), "run-file",
-        "--output", name, "--kind", "frame-capacity-source", "--required-gb", "1",
-        "--", "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", pattern,
-        "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono",
-        "-frames:v", str(args.frames), "-t", f"{duration:.12f}",
-        "-vf", (f"drawbox=x={marker_x}:y={marker_y}:w={marker_w}:h={marker_h}:"
-                f"color=white:t=fill:enable='{enable}',setsar=32/35"),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0",
-        "-c:a", "aac", "-b:a", "64k", "{output}",
-    ]
-    result = subprocess.run(command, cwd=ROOT, check=True, text=True, capture_output=True)
-    source = Path(result.stdout.strip().splitlines()[-1])
-    probe = subprocess.check_output([
+    markers = sorted({frame for frame in (
+        0, 1, 32767, 32768, 65534, 65535, 65536,
+        args.frames - 2, args.frames - 1) if 0 <= frame < args.frames})
+    if args.existing_source is not None:
+        source = args.existing_source.resolve()
+        if not source.is_file():
+            parser.error(f"existing source does not exist: {source}")
+    else:
+        enable = "+".join(f"eq(n,{frame})" for frame in markers)
+        name = f"frame_capacity_{args.pattern}_{args.fps}fps_{args.frames}{size_tag}.mp4"
+        pattern = (f"color=c=0x404040:size={size}:rate={args.fps}"
+                   if args.pattern == "flat" else f"smptebars=size={size}:rate={args.fps}")
+        marker_w, marker_h = min(32, args.width), min(16, args.height)
+        marker_x = (args.width - marker_w) // 16 * 8
+        marker_y = (args.height - marker_h) // 16 * 8
+        command = [
+            sys.executable, str(ROOT / "tools/tmpfs_workspace.py"), "run-file",
+            "--output", name, "--kind", "frame-capacity-source", "--required-gb", "1",
+            "--", "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", pattern,
+            "-f", "lavfi", "-i", "anullsrc=r=22050:cl=mono",
+            "-frames:v", str(args.frames), "-t", f"{duration:.12f}",
+            "-vf", (f"drawbox=x={marker_x}:y={marker_y}:w={marker_w}:h={marker_h}:"
+                    f"color=white:t=fill:enable='{enable}',setsar=32/35"),
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0",
+            "-c:a", "aac", "-b:a", "64k", "{output}",
+        ]
+        result = subprocess.run(command, cwd=ROOT, check=True, text=True, capture_output=True)
+        source = Path(result.stdout.strip().splitlines()[-1])
+
+    probe = json.loads(subprocess.check_output([
         "ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
-        "-show_entries", "stream=nb_read_frames",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(source),
-    ], text=True).strip()
-    if int(probe) != args.frames:
-        raise RuntimeError(f"generated {probe} frames, expected {args.frames}")
+        "-show_entries", "stream=nb_read_frames,width,height,avg_frame_rate",
+        "-of", "json", str(source),
+    ], text=True, encoding="utf-8"))
+    streams = probe.get("streams", [])
+    if len(streams) != 1:
+        raise RuntimeError(f"expected exactly one selected video stream, got {len(streams)}")
+    video = streams[0]
+    frame_count = int(video.get("nb_read_frames", -1))
+    fps = Fraction(video.get("avg_frame_rate", "0/1"))
+    if frame_count != args.frames:
+        raise RuntimeError(f"source has {frame_count} frames, expected {args.frames}")
+    if (video.get("width"), video.get("height")) != (args.width, args.height):
+        raise RuntimeError(
+            f"source is {video.get('width')}x{video.get('height')}, expected {size}")
+    if fps != args.fps:
+        raise RuntimeError(f"source is {fps} fps, expected {args.fps}")
     args.profile.parent.mkdir(parents=True, exist_ok=True)
     args.profile.write_text(f'''schema_version = 5
 
@@ -93,7 +113,7 @@ cold_cap = 210
 algorithm = "mosaic-gm"
 ''', encoding="utf-8")
     print(f"source: {source}")
-    print(f"frames: {probe}; fps: {args.fps}; duration: {duration:.9f}s")
+    print(f"frames: {frame_count}; fps: {args.fps}; duration: {duration:.9f}s")
     print(f"source/encode raster: {size}; display aperture: 320x224")
     print(f"marker frames: {markers}")
     print(f"profile: {args.profile.resolve()}")

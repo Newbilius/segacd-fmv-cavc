@@ -34,7 +34,7 @@ on:
   workflow_dispatch:
     inputs:
       full_linux_make:
-        description: Run a full 16,384-frame Linux encode and all movie Make targets
+        description: Run full 16,384-frame Linux Make and same-source Windows CPU qualification
         type: boolean
         required: false
         default: false
@@ -71,6 +71,7 @@ jobs:
       - name: Generate the canonical full-length source
         run: |
           tools/python.sh \
+            --device cpu \
             --workspace-root "$PWD/tmp/linux-movie/workspace" \
             --scratch-root "$RUNNER_TEMP/cavc-linux-scratch" \
             --array-storage disk \
@@ -79,12 +80,17 @@ jobs:
       - name: Encode all six stages on Linux
         run: |
           tools/python.sh \
+            --device cpu \
             --workspace-root "$PWD/tmp/linux-movie/workspace" \
             --scratch-root "$RUNNER_TEMP/cavc-linux-scratch" \
             --array-storage disk \
             tools/sim.py tmp/linux-movie/profile.toml
       - name: Execute Linux movie Make targets from the completed encode
         run: |
+          export CBRSIM_DEVICE=cpu
+          export CAVC_WORKSPACE_ROOT="$PWD/tmp/linux-movie/workspace"
+          export CAVC_SCRATCH_ROOT="$RUNNER_TEMP/cavc-linux-scratch"
+          export CAVC_ARRAY_STORAGE=disk
           make moviepack CONFIG=tmp/linux-movie/profile.toml
           make movieplay-module CONFIG=tmp/linux-movie/profile.toml
           make movieplay-internal CONFIG=tmp/linux-movie/profile.toml
@@ -94,6 +100,93 @@ jobs:
           test -s out/profile_release.cue
           grep -Fx 'FILE "profile_release.iso" BINARY' out/profile_release.cue
           tools/python.sh -c 'from pathlib import Path; import encode_config; from multipart_build import verify_iso; profile = encode_config.load_profile(Path("tmp/linux-movie/profile.toml")); verify_iso(Path("out/profile_release.iso"), Path(profile.disc_staging_dir)); print("Linux movie ISO independently verified")'
+      - name: Prepare full-source cross-platform baseline
+        run: |
+          tools/python.sh --device cpu \
+            --workspace-root "$PWD/tmp/linux-movie/workspace" \
+            --scratch-root "$RUNNER_TEMP/cavc-linux-scratch" \
+            --array-storage disk \
+            harness/windows_port/prepare_cross_platform_baseline.py \
+            tmp/linux-movie/profile.toml tmp/linux-movie/baseline
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-full-source-baseline
+          path: tmp/linux-movie/baseline/
+          if-no-files-found: error
+          retention-days: 2
+
+  windows-cross-platform-full:
+    if: github.event_name == 'workflow_dispatch' && inputs.full_linux_make
+    needs: linux-movie-make
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.11.29'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install pinned FFmpeg and 7-Zip
+        shell: pwsh
+        run: |
+          winget install --id 7zip.7zip --exact --version 26.02 --accept-source-agreements --accept-package-agreements
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip installation failed: $LASTEXITCODE" }
+          winget install --id Gyan.FFmpeg --exact --version 8.1.2 --accept-source-agreements --accept-package-agreements
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg installation failed: $LASTEXITCODE" }
+          $ffmpeg = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Microsoft/WinGet/Packages/Gyan.FFmpeg_*') -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
+          if (-not $ffmpeg) { throw 'Pinned Gyan FFmpeg package did not install ffmpeg.exe' }
+          $ffprobe = Join-Path $ffmpeg.DirectoryName 'ffprobe.exe'
+          if (-not (Test-Path $ffprobe)) { throw 'Pinned Gyan FFmpeg package did not install ffprobe.exe' }
+          $ffmpegVersion = (& $ffmpeg.FullName -version | Select-Object -First 1)
+          if ($LASTEXITCODE -ne 0 -or $ffmpegVersion -notmatch '^ffmpeg version 8\.1\.2') { throw "Unexpected FFmpeg version: $ffmpegVersion" }
+          $ffprobeVersion = (& $ffprobe -version | Select-Object -First 1)
+          if ($LASTEXITCODE -ne 0 -or $ffprobeVersion -notmatch '^ffprobe version 8\.1\.2') { throw "Unexpected FFprobe version: $ffprobeVersion" }
+          $ffmpeg.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Bootstrap pinned CPU environment
+        shell: pwsh
+        run: .\tools\bootstrap_python.ps1 --cpu
+      - name: Install pinned native m68k tools
+        shell: pwsh
+        run: |
+          $install = Join-Path $env:RUNNER_TEMP 'cavc-m68k'
+          .\harness\windows_port\install_sgdk_tools.ps1 -InstallDirectory $install
+          $prefix = (Join-Path $install 'bin/m68k-elf-')
+          "M68K_PREFIX=$prefix" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-full-source-baseline
+          path: tmp/windows-cross-platform/baseline
+      - name: Encode and compare the exact Linux source on Windows CPU
+        shell: pwsh
+        run: |
+          $workspace = Join-Path $env:RUNNER_TEMP 'cavc-cross-platform/workspace'
+          $scratch = Join-Path $env:RUNNER_TEMP 'cavc-cross-platform/scratch'
+          New-Item -ItemType Directory -Force $workspace, $scratch | Out-Null
+          $source = (Resolve-Path 'tmp/windows-cross-platform/baseline/source.mp4').Path
+          .\tools\python.ps1 --workspace-root $workspace --scratch-root $scratch --array-storage disk harness/frame_capacity/make_source.py --frames 16384 --existing-source $source --profile tmp/windows-cross-platform/profile.toml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\tools\cavc.ps1 --workspace-root $workspace --scratch-root $scratch --array-storage disk convert tmp/windows-cross-platform/profile.toml --device cpu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $candidateData = (& .\tools\python.ps1 --workspace-root $workspace --scratch-root $scratch --array-storage disk --device cpu -c 'from pathlib import Path; import encode_config,sys; print(encode_config.load_profile(Path(sys.argv[1])).output_dir)' tmp/windows-cross-platform/profile.toml | Select-Object -Last 1).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $candidateBuild = (& .\tools\python.ps1 --workspace-root $workspace --scratch-root $scratch --array-storage disk --device cpu -c 'from pathlib import Path; import encode_config,sys; print(encode_config.load_profile(Path(sys.argv[1])).build_dir)' tmp/windows-cross-platform/profile.toml | Select-Object -Last 1).Trim()
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\tools\python.ps1 harness/windows_port/compare_normalized_source.py $source $source --ffmpeg ffmpeg --ffprobe ffprobe --tsv logs/windows-full-source-normalized.tsv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\tools\python.ps1 harness/windows_port/compare_cross_platform.py tmp/windows-cross-platform/baseline $candidateData out/profile $candidateBuild $source logs/windows-full-source-normalized.tsv --tsv logs/windows-full-cross-platform.tsv --decisions-tsv logs/windows-full-cross-platform-decisions.tsv
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-full-cross-platform-comparison
+          path: |
+            logs/windows-full-source-normalized.tsv
+            logs/windows-full-cross-platform.tsv
+            logs/windows-full-cross-platform-decisions.tsv
+            logs/windows-cli-encode-*.json
+            logs/windows-cli-disc-*.json
+          if-no-files-found: error
+          retention-days: 2
 
   linux-build-contracts:
     runs-on: ubuntu-24.04
