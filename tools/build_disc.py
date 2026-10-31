@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
+import json
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -116,10 +120,14 @@ def build(profile_path: Path, *, debug: bool = False, region: str = "jp",
           main_codegen: bool = True, player_specialize: bool = True,
           iso_hold_n: int = 0, verify_sp_tail: bool = False,
           pack: bool = True, pack_only: bool = False,
-          module_only: bool = False, multipart: bool = False):
+          module_only: bool = False, multipart: bool = False,
+          disc_label: str | None = None):
     if region not in ("jp", "us"):
         raise ValueError("security region must be jp or us")
     profile = encode_config.load_profile(profile_path)
+    disc_label = encode_config.normalize_disc_label(
+        disc_label if disc_label is not None else
+        profile.data.get("release", {}).get("disc_label", "SCFMV_DLT"))
     artifact = ROOT / profile.artifact_dir
     build_dir = ROOT / profile.build_dir
     staging = ROOT / profile.disc_staging_dir
@@ -211,9 +219,18 @@ def build(profile_path: Path, *, debug: bool = False, region: str = "jp",
     iso = ROOT/"out"/f"{profile.artifact_stem}{suffix}.iso"
     cue = iso.with_suffix(".cue")
     pending = iso.with_name(iso.name + ".pending")
-    iso9660.write_iso(pending, boot_bin, staging, "SCFMV_DLT")
-    verify_iso(pending, staging)
+    iso9660.write_iso(pending, boot_bin, staging, disc_label)
+    verify_iso(pending, staging, disc_label=disc_label)
     os.replace(pending, iso)
+    metadata = iso.with_suffix(".json")
+    hasher = hashlib.sha256()
+    with iso.open("rb") as source:
+        for block in iter(lambda: source.read(1024*1024), b""):
+            hasher.update(block)
+    metadata.write_text(json.dumps({"iso": str(iso), "disc_label": disc_label,
+                                    "region": region, "debug": debug,
+                                    "sha256": hasher.hexdigest()},
+                                   sort_keys=True) + "\n", encoding="utf-8")
     (cue.parent).mkdir(parents=True, exist_ok=True)
     cue.write_text(f'FILE "{iso.name}" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n',
                    encoding="ascii", newline="\n")
@@ -226,6 +243,7 @@ def main() -> None:
     parser.add_argument("profile", type=Path)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--region", choices=("jp", "us"), default="jp")
+    parser.add_argument("--disc-label")
     parser.add_argument("--no-main-codegen", action="store_true")
     parser.add_argument("--generic-player", action="store_true")
     parser.add_argument("--iso-hold-n", type=int, default=0)
@@ -248,7 +266,7 @@ def main() -> None:
                 player_specialize=not args.generic_player,
                 iso_hold_n=args.iso_hold_n, verify_sp_tail=args.verify_sp_tail,
                 pack_only=args.pack_only, module_only=args.module_only,
-                multipart=args.multipart)
+                multipart=args.multipart, disc_label=args.disc_label)
     finally:
         if previous is None:
             os.environ.pop(marker, None)

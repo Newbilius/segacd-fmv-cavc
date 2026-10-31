@@ -326,7 +326,13 @@ def parse_args(argv=None):
     parser.add_argument("--known-frames", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--debug", action="store_true", help="Include the playback DEBUG HUD")
     parser.add_argument("--security-region", choices=("jp", "us"), default="jp")
+    parser.add_argument("--disc-label", help="ISO volume label (1..32 ASCII letters, digits, or underscores)")
     args = parser.parse_args(argv)
+    if args.disc_label is not None:
+        try:
+            args.disc_label = encode_config.normalize_disc_label(args.disc_label)
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.parts is not None and not 1 <= args.parts <= MAX_PARTS:
         parser.error(f"--parts must be within 1..{MAX_PARTS}")
     if args.known_frames is not None and args.known_frames < 2:
@@ -374,7 +380,10 @@ def main():
             print("multipart: all parts complete; encode-only requested, disc build skipped", flush=True)
             return 0
         import multipart_build
-        multipart_build.build(plan, profiles, records, debug=args.debug, region=args.security_region)
+        multipart_build.build(plan, profiles, records, debug=args.debug,
+                              region=args.security_region,
+                              disc_label=(args.disc_label if args.disc_label is not None
+                                  else profile.data.get("release", {}).get("disc_label")))
     return 0
 
 

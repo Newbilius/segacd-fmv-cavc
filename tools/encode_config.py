@@ -124,7 +124,7 @@ ALLOWED = {
                 "source_license_ja", "source_license_url"},
     # Disc-image release metadata, for the same reason as [youtube]: naming a
     # release must not change the encode identity.
-    "release": {"title", "title_ja"},
+    "release": {"title", "title_ja", "disc_label"},
     # Comparison-video composition: which footage fills each panel, how the
     # panels are synchronised, and the text drawn on the frame. Also outside
     # ENV_MAP, for the same reason as [youtube] - retiming a panel or editing a
@@ -324,6 +324,13 @@ class EncodeProfile:
     def release_title_ja(self) -> str:
         return (self.data.get("release", {}).get("title_ja")
                 or self.release_title)
+
+
+def normalize_disc_label(value: Any, context: str = "disc label") -> str:
+    if (not isinstance(value, str) or not 1 <= len(value) <= 32
+            or re.fullmatch(r"[A-Za-z0-9_]{1,32}", value) is None):
+        raise ValueError(f"{context} must be 1..32 ASCII letters, digits, or underscores")
+    return value.upper()
 
 
 def load_profile(path: str | os.PathLike[str]) -> EncodeProfile:
@@ -571,6 +578,9 @@ def validate_profile_data(
         if "\n" in title:
             raise ValueError(
                 f"{profile_path}: release.{key} must be a single line")
+    if "disc_label" in release:
+        release["disc_label"] = normalize_disc_label(
+            release["disc_label"], f"{profile_path}: release.disc_label")
     preprocess = data["source"].get("preprocess", {})
     if not isinstance(preprocess, dict):
         raise ValueError(f"{profile_path}: [source.preprocess] must be a table")

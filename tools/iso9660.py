@@ -55,8 +55,8 @@ def write_iso(output: Path, boot_image: Path, staged: Path, volume: str) -> None
         if (not re.fullmatch(r"[A-Z0-9_]{1,8}(?:\.[A-Z0-9_]{1,3})?", path.name)
                 or not path.name.isascii()):
             raise ValueError(f"ISO level-1 filename must use the 8.3 uppercase ASCII form: {path.name}")
-    if not volume.isascii() or len(volume) > 32:
-        raise ValueError("ISO volume identifier must be at most 32 ASCII bytes")
+    if re.fullmatch(r"[A-Za-z0-9_]{1,32}", volume) is None:
+        raise ValueError("ISO volume identifier must be 1..32 ASCII letters, digits, or underscores")
     root_lba = 20
     # Path-table identifiers are padded to an even record length.
     path_bytes = (bytes((1, 0)) + root_lba.to_bytes(4, "little")
@@ -136,10 +136,12 @@ def main() -> None:
     parser.add_argument("--staging", type=Path, required=True)
     parser.add_argument("--volume", required=True)
     args = parser.parse_args()
+    from encode_config import normalize_disc_label
+    args.volume = normalize_disc_label(args.volume, "--volume")
     pending = args.output.with_name(args.output.name + ".verify.pending")
     write_iso(pending, args.boot_image, args.staging, args.volume)
     from multipart_build import verify_iso
-    verify_iso(pending, args.staging)
+    verify_iso(pending, args.staging, disc_label=args.volume)
     os.replace(pending, args.output)
 
 

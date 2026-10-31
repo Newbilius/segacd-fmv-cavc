@@ -243,6 +243,13 @@ def print_resolved_plan(profile, *, action: str, fps_origin: str,
         if max(end-start for start, end in ranges) > 65535:
             print("  WordBuf: disabled for any part above 65,535 frames")
     print(f"  Artifact stem: {profile.artifact_stem}")
+    if action in ("convert", "disc", "multipart"):
+        default_label = ("CAVC_MULTIPART" if part_count and part_count > 1
+                         else "SCFMV_DLT")
+        label = profile.data.get("release", {}).get("disc_label", default_label)
+        if getattr(args, "disc_label", None) is not None:
+            label = encode_config.normalize_disc_label(args.disc_label)
+        print(f"  ISO volume label: {label}")
     print(f"  Packed artifacts: {profile.artifact_dir}")
     try:
         sim_workspace = profile.output_dir
@@ -403,6 +410,9 @@ def main(argv: list[str] | None = None) -> int:
                          help="build a DEBUG disc image with diagnostics (default: off)")
         cmd.add_argument("--region", choices=("jp", "us"), default="jp",
                          help="Sega CD release region (default: jp)")
+        if action in ("disc", "convert", "multipart"):
+            cmd.add_argument("--disc-label", dest="disc_label",
+                             help="ISO volume label, 1..32 ASCII letters, digits, or underscores (default: profile or workflow default)")
         if action == "multipart":
             cmd.add_argument("--parts", type=int,
                              help="override profile part count, 1..64 (default: profile value; must be supplied if absent there)")
@@ -505,6 +515,8 @@ def main(argv: list[str] | None = None) -> int:
     if early_timing & named_timing:
         parser.error("duplicate timing assignment between named options and --set")
     named_paths = set(named_timing)
+    if getattr(args, "disc_label", None) is not None:
+        named_paths.add("release.disc_label")
     for option, key in (("width", "video.width"), ("height", "video.height"),
                         ("fit", "video.fit"), ("duration", "source.duration"),
                         ("start_frame", "source.start_frame"),
@@ -515,6 +527,9 @@ def main(argv: list[str] | None = None) -> int:
     duplicates = named_paths & assignments.keys()
     if duplicates:
         parser.error("duplicate CLI assignments: " + ", ".join(sorted(duplicates)))
+    if getattr(args, "disc_label", None) is not None:
+        assignments["release.disc_label"] = encode_config.normalize_disc_label(
+            args.disc_label, "--disc-label")
     if (args.action != "doctor" and
             (args.source is not None or (args.input is not None and
              args.input.suffix.lower() != ".toml")) and "source.path" in assignments):
@@ -922,10 +937,12 @@ def main(argv: list[str] | None = None) -> int:
         if output_frames is not None:
             split_frames(output_frames, part_count, source_bounds_for_plan[0])
         source_bytes = source_byte_identity(profile_path)
+        encode_settings = copy.deepcopy(data)
+        encode_settings.get("release", {}).pop("disc_label", None)
         identity_data = {
             "source": source_bytes,
             "encoder_version": encoder_version(),
-            "settings": data,
+            "settings": encode_settings,
             "parts": part_count,
         }
         config_key = json.dumps(identity_data, sort_keys=True,
@@ -1120,6 +1137,8 @@ def main(argv: list[str] | None = None) -> int:
                 command = [sys.executable, str(ROOT/"tools/multipart.py"), str(profile.path),
                            "--parts", str(selected_multipart_parts), "--known-frames", str(source_total_frames),
                            "--security-region", args.region]
+                if profile.data.get("release", {}).get("disc_label"):
+                    command += ["--disc-label", profile.data["release"]["disc_label"]]
                 if args.action == "encode":
                     command.append("--encode-only")
                 if args.debug:
@@ -1129,6 +1148,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.action == "multipart":
                 command = [sys.executable, str(ROOT/"tools/multipart.py"), str(profile.path),
                            "--security-region", args.region]
+                if profile.data.get("release", {}).get("disc_label"):
+                    command += ["--disc-label", profile.data["release"]["disc_label"]]
                 if args.parts is not None:
                     command += ["--parts", str(args.parts)]
                 if args.part is not None:
@@ -1144,6 +1165,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.action in ("disc", "convert"):
                 command = [sys.executable, str(ROOT/"tools/build_disc.py"), str(profile.path),
                            "--region", args.region]
+                if profile.data.get("release", {}).get("disc_label"):
+                    command += ["--disc-label", profile.data["release"]["disc_label"]]
                 if args.debug:
                     command.append("--debug")
                 run_stage("disc", command, env=env)

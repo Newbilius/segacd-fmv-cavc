@@ -404,8 +404,17 @@ page, Enter for one line, or `q` to stop.
 .\tools\cavc.ps1 encode --source "C:\Videos\movie.mp4" --config profiles\base.toml --dry-run
 .\tools\cavc.ps1 convert profiles\PROFILE.toml --device cuda
 .\tools\cavc.ps1 convert profiles\PROFILE.toml --device cpu
+.\tools\cavc.ps1 convert "C:\Videos\movie.mp4" --disc-label "HORIZON_CHASE_TURBO"
 .\tools\cavc.ps1 multipart profiles\PROFILE.toml --parts 3 --device cuda
 ```
+
+Set `[release].disc_label` in a profile or pass `--disc-label` to `convert`,
+`disc`, or `multipart`. It sets the ISO filesystem volume identifier and leaves
+the Sega CD boot title and output filenames unchanged. Labels accept 1..32
+ASCII letters, digits, and underscores; lowercase is normalized to uppercase.
+Single-movie discs default to `SCFMV_DLT`, multipart discs to `CAVC_MULTIPART`.
+Changing the label rebuilds the ISO while reusing matching encoded and packed
+artifacts.
 
 `doctor` checks interpreter packages, FFmpeg, m68k tools, storage, and CUDA.
 `auto` uses the GPU environment when installed and falls back to CPU if CUDA
@@ -1011,8 +1020,15 @@ installerは展開前にrelease archiveのSHA-256を照合し、assembler、link
 .\tools\cavc.ps1 doctor
 .\tools\cavc.ps1 convert profiles\PROFILE.toml --device cuda
 .\tools\cavc.ps1 convert profiles\PROFILE.toml --device cpu
+.\tools\cavc.ps1 convert "C:\Videos\movie.mp4" --disc-label "HORIZON_CHASE_TURBO"
 .\tools\cavc.ps1 multipart profiles\PROFILE.toml --parts 3 --device cuda
 ```
+
+Profileの`[release].disc_label`、または`convert`、`disc`、`multipart`の`--disc-label`で
+ISO filesystemのvolume identifierを指定できます。Sega CD boot titleと出力filenameは変わりません。
+1〜32文字のASCII英字・数字・underscoreを受け付け、小文字は大文字に正規化します。
+single-movieの既定値は`SCFMV_DLT`、multipartは`CAVC_MULTIPART`です。labelだけを変えた場合は
+一致するencode済み・packed artifactを再利用してISOを再構築します。
 
 `doctor`はPython package、FFmpeg、m68k tool、保存領域、CUDAを確認します。
 `auto`はGPU環境があれば選択し、CUDAを初期化できない場合はCPUへfallbackします。

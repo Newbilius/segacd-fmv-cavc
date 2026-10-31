@@ -12,6 +12,7 @@ import ima_adpcm
 import player_constants
 import sp_extension
 from multipart import ROOT, digest, run_logged, stem_lock, write_json
+import encode_config
 import iso9660
 
 IP_BYTES = 0x5000
@@ -109,7 +110,7 @@ def assemble(work, region, *, bootstrap=True):
     return directory
 
 
-def verify_iso(iso, staged):
+def verify_iso(iso, staged, *, disc_label=None):
     """Independently read ISO records and authenticate every staged byte."""
     def paired(record, offset):
         little = int.from_bytes(record[offset:offset+4], "little")
@@ -125,6 +126,10 @@ def verify_iso(iso, staged):
         pvd = stream.read(2048)
         if pvd[:7] != b"\x01CD001\x01":
             raise ValueError("missing ISO primary descriptor")
+        if disc_label is not None:
+            expected = encode_config.normalize_disc_label(disc_label).encode("ascii").ljust(32, b" ")
+            if pvd[40:72] != expected:
+                raise ValueError("ISO volume identifier differs from expected disc label")
         root = pvd[156:190]
         lba, count = paired(root, 2), paired(root, 10)
         if not 0 < count <= 65536 or lba*2048+count > size:
@@ -171,7 +176,12 @@ def verify_iso(iso, staged):
                 raise ValueError(f"ISO payload differs: {path.name}")
 
 
-def build(plan, profiles, records, *, debug, region):
+def build(plan, profiles, records, *, debug, region, disc_label=None):
+    disc_label = encode_config.normalize_disc_label(
+        disc_label if disc_label is not None else
+        profiles[0].data.get("release", {}).get("disc_label", "CAVC_MULTIPART"))
+    plan = dict(plan)
+    plan["disc_label"] = disc_label
     work = ROOT / "tmp" / plan["stem"]
     directory = work/"build"
     directory.mkdir(parents=True, exist_ok=True)
@@ -240,14 +250,15 @@ def build(plan, profiles, records, *, debug, region):
     suffix = ("" if region == "jp" else "_us") + ("" if debug else "_release")
     iso = ROOT/"out"/f"{plan['stem']}{suffix}.iso"
     pending = work/"multipart.pending.iso"
-    iso9660.write_iso(pending, directory/"multipart_boot.bin", staged, "CAVC_MULTIPART")
-    verify_iso(pending, staged)
+    iso9660.write_iso(pending, directory/"multipart_boot.bin", staged, disc_label)
+    verify_iso(pending, staged, disc_label=disc_label)
     os.replace(pending, iso)
     cue = iso.with_suffix(".cue")
     cue.write_text(f'FILE "{iso.name}" BINARY\n  TRACK 01 MODE1/2048\n    INDEX 01 00:00:00\n')
     manifest = {"schema": 1, "identity": plan["identity"], "versions": analysis_logs.av_versions(),
                 "profile": plan["profile"], "parts": count, "stem": plan["stem"],
-                "debug": debug, "region": region, "iso": str(iso), "cue": str(cue),
+                "debug": debug, "region": region, "disc_label": disc_label,
+                "iso": str(iso), "cue": str(cue),
                 "iso_sha256": digest(iso), "items": items,
                 "trace_pc_start": symbol(directory/"multipart_ip.o", "multipart_trace_begin", 0xFF0000),
                 "trace_pc_end": symbol(directory/"multipart_ip.o", "multipart_trace_end", 0xFF0000),

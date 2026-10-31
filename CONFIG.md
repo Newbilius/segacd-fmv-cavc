@@ -102,13 +102,34 @@ other TOML field accepted by the shared profile schema:
 | `[analysis]` | `source_canvas`, `source_par`, `source_spec`, `tail_seconds` |
 | `[multipart]` | `parts` |
 | `[youtube]` | `analysis_title`, `playback_title`, `source_label`, `source_label_ja`, `source_url`, `source_license`, `source_license_ja`, `source_license_url` |
-| `[release]` | `title`, `title_ja` |
+| `[release]` | `title`, `title_ja`, `disc_label` |
 | `[comparison]` | `badge`, `title`, `audio_panel`, `audio_intro_panel`, `audio_note`, `output`, `duration`, `tail_seconds`, `youtube`, and `panels.<name>.<field>` where panel fields are `label`, `short_label`, `slot`, `aperture`, `pixel_aspect`, `spec`, `placeholder`, `path`, `crop`, `pad`, `input_fps`, `resize`, `fmv_start`, `lead`. |
 
 `source.path` is accepted for profile input; in direct-source mode the input
 argument owns that field. Runtime options (`--device`, region, storage roots, `--force`, and `--debug`)
 are separate from encode settings. A field must be assigned once: repeating a
 named option and its `--set` path is an error.
+
+`[release].disc_label` sets the ISO filesystem volume identifier; it does not
+change the Sega CD boot title or output filenames. `convert`, `disc`, and
+`multipart` also accept `--disc-label`, which overrides the profile; assigning
+both `--disc-label` and `--set release.disc_label=...` is an error. Labels must
+contain 1..32 ASCII letters, digits, or underscores (`[A-Za-z0-9_]`). Accepted
+lowercase letters are normalized to uppercase; whitespace, punctuation,
+Unicode, empty values, and longer labels are rejected without trimming or
+truncation. The default is `SCFMV_DLT` for a single-movie disc and
+`CAVC_MULTIPART` for multipart. A label change rebuilds only the disc image;
+it does not change encode identity or invalidate matching video/packed/player
+artifacts.
+
+```toml
+[release]
+disc_label = "HORIZON_CHASE_TURBO"
+```
+
+```powershell
+tools\cavc.ps1 convert "E:\VIDEO\movie.mp4" --disc-label "HORIZON_CHASE_TURBO"
+```
 
 ## Workstation concurrency
 
@@ -126,7 +147,14 @@ named option and its `--set` path is an error.
 | `[analysis]` | `source_canvas`、`source_par`、`source_spec`、`tail_seconds` |
 | `[multipart]` | `parts` |
 | `[youtube]` | `analysis_title`、`playback_title`、`source_label`、`source_label_ja`、`source_url`、`source_license`、`source_license_ja`、`source_license_url` |
-| `[release]` | `title`、`title_ja` |
+| `[release]` | `title`、`title_ja`、`disc_label` |
+
+`[release].disc_label`はISO filesystemのvolume identifierです。`convert`、`disc`、
+`multipart`の`--disc-label`でprofile値を上書きできます。同じ指定を`--set`と重ねると
+エラーです。ASCII英字・数字・underscoreを1〜32文字受け付け、小文字は大文字に正規化します。
+空文字、空白、underscore以外の記号、Unicode、33文字以上はtrimや切り詰めをせず拒否します。
+省略時はsingle-movieが`SCFMV_DLT`、multipartが`CAVC_MULTIPART`です。label変更はdiscだけを
+再構築し、一致するencode/packed/player artifactを再利用します。
 | `[comparison]` | `badge`、`title`、`audio_panel`、`audio_intro_panel`、`audio_note`、`output`、`duration`、`tail_seconds`、`youtube`、および`panels.<name>.<field>`。panel fieldは`label`、`short_label`、`slot`、`aperture`、`pixel_aspect`、`spec`、`placeholder`、`path`、`crop`、`pad`、`input_fps`、`resize`、`fmv_start`、`lead`。 |
 
 `source.path`はprofile入力で指定できます。直接入力ではinput argumentがこのfieldを決めます。`--device`、region、storage root、`--force`、`--debug`はruntime optionで、encode設定とは別です。同じfieldをnamed optionと`--set`の両方で指定するとerrorになります。
