@@ -380,14 +380,17 @@ are pinned in `.python-version`, `.python-version-gpu`, `pyproject.toml`, and
 |---|---|---|---|
 | uv | 0.11.29, official Astral Windows x64 release; `install_uv.ps1` | `A047D55651BC3E0CA24595B25EC4CFCB10F9DCA9FB56514E661269B37D4FAE68`; checked by installer | MIT or Apache-2.0; license texts are available from Astral's repository |
 | FFmpeg / FFprobe | 8.1.2, Gyan full Windows x64 build via WinGet `Gyan.FFmpeg` | `B8CDEFAB5F50590A076C27C2B56B0294A0E6154FADED28BA1BA05EBC4F801F57`; WinGet manifest and local download verified | GPL-3.0 full build; see package and upstream build license notices |
-| 7-Zip | 26.02 x64 via WinGet `7zip.7zip` | `6745FA76DC2EA031596D8678F6F6B99C3C1B435B4164A63485ADBBC7B8D82EF0`; checked by WinGet | LGPL, with BSD 3-Clause components and an unRAR restriction |
+| 7-Zip | 26.02 x64 via WinGet `7zip.7zip` | WinGet x64 MSI: `DB407A4F6D4999E5C7BC00CE8A882BE94717B56E7FA68140FE3F12605D91643E`; standalone x64 EXE: `6745FA76DC2EA031596D8678F6F6B99C3C1B435B4164A63485ADBBC7B8D82EF0` | LGPL, with BSD 3-Clause components and an unRAR restriction |
 | GNU m68k binutils | 2.40 from official SGDK v2.11 Windows release | `5CC704B7E3A15183C33E721A1D7F84C067CF78808754556D03BB14764DF51437`; checked by `install_sgdk_tools.ps1` | License and runtime notices are extracted from the release archive |
 | NVIDIA driver | Host-installed driver compatible with the CUDA 12 runtime | `doctor` and `cuda_smoke.py` check availability and execution; driver version is host-managed | NVIDIA driver terms apply; it is not bundled by this project |
 
-The Gyan FFmpeg and 7-Zip hashes above are the x64 archive/installer hashes
-recorded in the WinGet manifests, not hashes of the installed executables.
-`doctor` reports the FFmpeg/FFprobe version actually found on `PATH`; use it to
-record host deviations from the documented setup.
+WinGet selects the Gyan FFmpeg 8.1.2 ZIP and the 7-Zip 26.02 x64 MSI on the
+hosted Windows runner; their hashes above are the exact package hashes. The
+7-Zip standalone x64 EXE hash is also recorded because the isolated setup
+qualification downloaded and checked that installer separately. These are
+installer/archive hashes, not hashes of the installed executables. `doctor`
+reports the FFmpeg/FFprobe version actually found on `PATH`; use it to record
+host deviations from the documented setup.
 
 The Gyan 8.1.2 x64 archive was also downloaded and independently checked
 against the recorded hash on this host. Its `doctor` report showed the expected
