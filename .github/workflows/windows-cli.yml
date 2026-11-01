@@ -149,9 +149,11 @@ jobs:
           if (-not $ffmpeg) { throw 'Pinned Gyan FFmpeg archive did not contain ffmpeg.exe' }
           $ffprobe = Join-Path $ffmpeg.DirectoryName 'ffprobe.exe'
           if (-not (Test-Path $ffprobe)) { throw 'Pinned Gyan FFmpeg package did not install ffprobe.exe' }
-          $ffmpegVersion = (& $ffmpeg.FullName -version | Select-Object -First 1)
+          $ffmpegVersionOutput = @(& $ffmpeg.FullName -version)
+          $ffmpegVersion = $ffmpegVersionOutput[0]
           if ($LASTEXITCODE -ne 0 -or $ffmpegVersion -notmatch '^ffmpeg version 8\.1\.2') { throw "Unexpected FFmpeg version: $ffmpegVersion" }
-          $ffprobeVersion = (& $ffprobe -version | Select-Object -First 1)
+          $ffprobeVersionOutput = @(& $ffprobe -version)
+          $ffprobeVersion = $ffprobeVersionOutput[0]
           if ($LASTEXITCODE -ne 0 -or $ffprobeVersion -notmatch '^ffprobe version 8\.1\.2') { throw "Unexpected FFprobe version: $ffprobeVersion" }
           $ffmpeg.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           $sevenZipRoot | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
@@ -272,9 +274,11 @@ jobs:
           if (-not $ffmpeg) { throw 'Pinned Gyan FFmpeg archive did not contain ffmpeg.exe' }
           $ffprobe = Join-Path $ffmpeg.DirectoryName 'ffprobe.exe'
           if (-not (Test-Path $ffprobe)) { throw 'Pinned Gyan FFmpeg package did not install ffprobe.exe' }
-          $ffmpegVersion = (& $ffmpeg.FullName -version | Select-Object -First 1)
+          $ffmpegVersionOutput = @(& $ffmpeg.FullName -version)
+          $ffmpegVersion = $ffmpegVersionOutput[0]
           if ($LASTEXITCODE -ne 0 -or $ffmpegVersion -notmatch '^ffmpeg version 8\.1\.2') { throw "Unexpected FFmpeg version: $ffmpegVersion" }
-          $ffprobeVersion = (& $ffprobe -version | Select-Object -First 1)
+          $ffprobeVersionOutput = @(& $ffprobe -version)
+          $ffprobeVersion = $ffprobeVersionOutput[0]
           if ($LASTEXITCODE -ne 0 -or $ffprobeVersion -notmatch '^ffprobe version 8\.1\.2') { throw "Unexpected FFprobe version: $ffprobeVersion" }
           $ffmpeg.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           $sevenZipRoot | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
