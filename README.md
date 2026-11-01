@@ -2,6 +2,21 @@ EN / [JP](#jp)
 
 # Sega CD Constraint-Aware Video Codec — a SEGA-CD / Genesis FMV codec
 
+## A fork of the project https://github.com/akiyan/segacd-fmv-cavc, with additional features implemented by Codex:
+
+1) Windows support
+2) Simplified usage: no need to manually create a TOML file:
+```
+tools\cavc.ps1 convert "video.mp4"
+```
+3) Built-in help for using the script, displayed when it is called without parameters:
+```
+tools\cavc.ps1 help
+```
+4) Ability to set a disc label using the `--disc-label` param
+5) Playback pausing via the A, B, C, and START buttons
+
+
 ## [▶ Try the browser encoder](https://segacd-fmv-cavc-encoder.akiyan.com/)
 
 **Turn your video into an ISO/CUE disc image playable on real Sega CD hardware
@@ -437,7 +452,7 @@ source. The original Linux source file is absent, so direct decoded-source
 comparison against that file remains open. See `harness/windows_port/README.md`
 for the full acceptance status.
 
-Direct video input defaults to 15 FPS and cold cap 380. Supply `--fps` and
+Direct video input defaults to 15 FPS and cold cap `380`. Supply `--fps` and
 `--cold-cap` together to select another timing pair; the CLI never substitutes
 the source frame rate. `--dry-run` probes the source and normally counts output
 frames without starting encoder or disc stages. With an explicit `--parts 1`
@@ -447,9 +462,9 @@ the packer validates it again. Direct input defaults to automatic parts, capped 
 part; `--parts N` selects a manual count.
 Parts play in order and pause while the next movie loads. `--set
 section.key=TOML_LITERAL` supplies advanced profile values; quote string values
-as TOML strings. The suggested non-default starting pairs are 24 or 24000/1001
-FPS with `2:180,3:230`, and 30 or 30000/1001 FPS with cold cap 200. Check each
-source and playback; these suggestions are not universal hardware guarantees.
+as TOML strings. The suggested non-default starting pairs are 15 FPS with cold
+cap 380, and 30 or 30000/1001 FPS with cold cap 200. Check each source and
+playback; these suggestions are not universal hardware guarantees.
 
 ## Build
 
@@ -1099,15 +1114,15 @@ Gistを明示的に依頼されたときだけ行います。ローカルのタ�
 
 <a id="multipart-cli-jp"></a>
 
-Direct video input は既定で15 FPS、cold cap 380を使います。別のtiming pairを選ぶ場合は
+Direct video input は既定で15 FPS、cold cap `380`を使います。別のtiming pairを選ぶ場合は
 `--fps`と`--cold-cap`を両方指定してください。source FPSへの自動置換はしません。
 `--dry-run`はsourceをprobeし、通常はframe countまで行いますが、encoder/disc stageは開始しません。
 全sourceを対象に`--parts 1`を明示すると、この事前countを省略し、実際のframe数はextractとpackで確定します。
 encode後ではなくframe抽出後にformat上限を検証し、packerも再検証します。direct inputの既定は1 partあたり最大65,535 frameのautomatic splitです。`--parts N`で
 manual countを選べます。partは順番に再生され、次のmovieのload中は一時停止します。
 `--set section.key=TOML_LITERAL`でadvanced profile値を指定できます。stringはTOML stringとして
-quoteしてください。推奨候補は15/380、24または24000/1001 FPSと`2:180,3:230`、
-30または30000/1001 FPSとcold cap 200です。各source/playbackで確認してください。
+quoteしてください。推奨候補は15 FPSとcold cap 380、30または30000/1001 FPSと
+cold cap 200です。各source/playbackで確認してください。
 これらはすべてのhardwareに対する保証値ではありません。
 
 ## Multipartエンコード（CLI）

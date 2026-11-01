@@ -199,7 +199,8 @@ def print_resolved_plan(profile, *, action: str, fps_origin: str,
                         output_frames: int | None = None,
                         part_count: int | None = None,
                         source_bounds: tuple[int, int] | None = None,
-                        iso_path: Path | None = None) -> None:
+                        iso_path: Path | None = None,
+                        disc_label: str | None = None) -> None:
     source = profile.data["source"]
     video = profile.data["video"]
     print("Resolved conversion plan:")
@@ -247,8 +248,8 @@ def print_resolved_plan(profile, *, action: str, fps_origin: str,
         default_label = ("CAVC_MULTIPART" if part_count and part_count > 1
                          else "SCFMV_DLT")
         label = profile.data.get("release", {}).get("disc_label", default_label)
-        if getattr(args, "disc_label", None) is not None:
-            label = encode_config.normalize_disc_label(args.disc_label)
+        if disc_label is not None:
+            label = encode_config.normalize_disc_label(disc_label)
         print(f"  ISO volume label: {label}")
     print(f"  Packed artifacts: {profile.artifact_dir}")
     try:
@@ -368,13 +369,13 @@ def print_mode_help(parser: argparse.ArgumentParser, name: str, width: int) -> N
             for detail in (
                     "--fps RATE selects output cadence; RATE may be rational, such as 24000/1001.",
                     "--cold-cap VALUE limits cold-pattern work per displayed frame, in patterns.",
-                    "Supply both options together. Direct video defaults to 15 FPS / 380; profile-only input keeps the profile pair unless both are overridden.",
+                    'Supply both options together. Direct video defaults to 15 FPS / 380; profile-only input keeps the profile pair unless both are overridden.',
                     'VALUE may be one positive integer (for example 380) or a cadence map, for example "2:180,3:230" for a 24 FPS 2/3-VBlank cadence.',
                     "The cap is a per-frame transfer limit, not a memory or whole-movie budget."):
                 print_help_entry("  ", detail, width)
             print("\nRecommended starting pairs (check each source and playback):")
             for detail in (
-                    "15 FPS: --fps 15 --cold-cap 380",
+                    "15 FPS: --fps 15 --cold-cap 380 (direct-video default)",
                     '24 FPS: --fps 24 --cold-cap "2:180,3:230"',
                     "30 FPS: --fps 30 --cold-cap 200"):
                 print_help_entry("  ", detail, width)
@@ -426,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
             cmd.add_argument("--fps", metavar="RATE",
                              help="output frames per second; rational rates accepted (default: 15 for direct video, profile value otherwise)")
             cmd.add_argument("--cold-cap", metavar="VALUE",
-                             help="per-frame cold-pattern limit; see timing notes below (default: 380 for direct video, profile value otherwise)")
+                             help='per-frame cold-pattern limit; see timing notes below (default: 380 for direct video, profile value otherwise)')
             cmd.add_argument("--dry-run", action="store_true",
                              help="show the resolved plan without starting stages (default: off)")
             cmd.add_argument("--width", type=int,
@@ -686,7 +687,7 @@ def main(argv: list[str] | None = None) -> int:
                 "sar", source_info["video"].get("sample_aspect_ratio", "1:1"))
             if args.fps is None and args.cold_cap is None and not early_timing:
                 source_data["source"]["fps"] = "15"
-                source_data["encoder"]["cold_cap"] = 380
+                source_data["encoder"]["cold_cap"] = "380"
             elif early_timing:
                 source_data["source"]["fps"] = str(early_timing_values["source.fps"])
                 source_data["encoder"]["cold_cap"] = early_timing_values["encoder.cold_cap"]
@@ -816,7 +817,7 @@ def main(argv: list[str] | None = None) -> int:
         fps = (args.fps if args.fps is not None else
                str(early_timing_values["source.fps"]) if early_timing else "15")
         cold_cap = (args.cold_cap if args.cold_cap is not None else
-                    early_timing_values.get("encoder.cold_cap", 380))
+                    early_timing_values.get("encoder.cold_cap", "380"))
         duration = (args.duration if args.duration is not None else
                     source_duration(source_info))
         duration_origin = ("CLI --duration" if args.duration is not None else "FFprobe")
@@ -1066,7 +1067,7 @@ def main(argv: list[str] | None = None) -> int:
         profile = encode_config.load_profile(internal_path)
     if direct_source_mode:
         fps_origin = ("CLI flags" if args.fps is not None else
-                      "--set" if early_timing else "direct-source default 15/380")
+                      "--set" if early_timing else 'direct-source default 15/380')
     elif getattr(args, "fps", None) is not None:
         fps_origin = "CLI flags"
     elif early_timing:
@@ -1104,7 +1105,7 @@ def main(argv: list[str] | None = None) -> int:
         source_info=source_info,
         total_frames=source_total_frames, output_frames=output_frames,
         part_count=resolved_part_count, source_bounds=source_range_value,
-        iso_path=selected_iso)
+        iso_path=selected_iso, disc_label=getattr(args, "disc_label", None))
     if getattr(args, "dry_run", False):
         print("Encoder stages: not started; build: not started")
         return 0
@@ -1137,8 +1138,8 @@ def main(argv: list[str] | None = None) -> int:
                 command = [sys.executable, str(ROOT/"tools/multipart.py"), str(profile.path),
                            "--parts", str(selected_multipart_parts), "--known-frames", str(source_total_frames),
                            "--security-region", args.region]
-                if profile.data.get("release", {}).get("disc_label"):
-                    command += ["--disc-label", profile.data["release"]["disc_label"]]
+                if args.disc_label is not None:
+                    command += ["--disc-label", args.disc_label]
                 if args.action == "encode":
                     command.append("--encode-only")
                 if args.debug:
@@ -1148,8 +1149,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.action == "multipart":
                 command = [sys.executable, str(ROOT/"tools/multipart.py"), str(profile.path),
                            "--security-region", args.region]
-                if profile.data.get("release", {}).get("disc_label"):
-                    command += ["--disc-label", profile.data["release"]["disc_label"]]
+                if args.disc_label is not None:
+                    command += ["--disc-label", args.disc_label]
                 if args.parts is not None:
                     command += ["--parts", str(args.parts)]
                 if args.part is not None:
@@ -1165,8 +1166,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.action in ("disc", "convert"):
                 command = [sys.executable, str(ROOT/"tools/build_disc.py"), str(profile.path),
                            "--region", args.region]
-                if profile.data.get("release", {}).get("disc_label"):
-                    command += ["--disc-label", profile.data["release"]["disc_label"]]
+                if args.disc_label is not None:
+                    command += ["--disc-label", args.disc_label]
                 if args.debug:
                     command.append("--debug")
                 run_stage("disc", command, env=env)

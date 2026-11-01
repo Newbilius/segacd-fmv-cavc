@@ -176,7 +176,8 @@ def verify_iso(iso, staged, *, disc_label=None):
                 raise ValueError(f"ISO payload differs: {path.name}")
 
 
-def build(plan, profiles, records, *, debug, region, disc_label=None):
+def build(plan, profiles, records, *, debug, region, disc_label=None,
+          boot_disc_label=None):
     disc_label = encode_config.normalize_disc_label(
         disc_label if disc_label is not None else
         profiles[0].data.get("release", {}).get("disc_label", "CAVC_MULTIPART"))
@@ -235,6 +236,11 @@ def build(plan, profiles, records, *, debug, region, disc_label=None):
     (directory/"multipart_ip.inc").write_text(main_include(sizes, entries))
     (directory/"multipart_sp.inc").write_text(sub_include(count, sub_entries))
     assemble(work, region)
+    if boot_disc_label is not None:
+        import build_disc
+        build_disc._apply_boot_disc_label(
+            directory/"multipart_boot.bin",
+            encode_config.normalize_disc_label(boot_disc_label, "--disc-label"))
     if symbol(directory/"multipart_ip.o", "multipart_resume", 0xFF0000) != reentry:
         raise ValueError("multipart reentry moved after filling dispatch tables")
     for obj, first, last, capacity in (

@@ -116,12 +116,24 @@ def _link(obj: Path, linker: Path, output: Path) -> None:
          "-o", output.as_posix(), obj.as_posix()])
 
 
+def _apply_boot_disc_label(boot_bin: Path, label: str) -> None:
+    """Copy an explicit ISO label into both fixed-width boot title fields."""
+    data = bytearray(boot_bin.read_bytes())
+    if len(data) < 0x180:
+        raise ValueError("boot image is too short to contain Sega CD title fields")
+    title = label.encode("ascii").ljust(48, b" ")
+    data[0x120:0x150] = title
+    data[0x150:0x180] = title
+    boot_bin.write_bytes(data)
+
+
 def build(profile_path: Path, *, debug: bool = False, region: str = "jp",
           main_codegen: bool = True, player_specialize: bool = True,
           iso_hold_n: int = 0, verify_sp_tail: bool = False,
           pack: bool = True, pack_only: bool = False,
           module_only: bool = False, multipart: bool = False,
-          disc_label: str | None = None):
+          disc_label: str | None = None,
+          boot_disc_label: str | None = None):
     if region not in ("jp", "us"):
         raise ValueError("security region must be jp or us")
     profile = encode_config.load_profile(profile_path)
@@ -206,6 +218,9 @@ def build(profile_path: Path, *, debug: bool = False, region: str = "jp",
     run([tool("objcopy"), "-O", "binary", str(boot_obj), str(boot_bin)])
     if boot_bin.stat().st_size != 32768:
         raise ValueError(f"complete boot image must be 32768 bytes, got {boot_bin.stat().st_size}")
+    if boot_disc_label is not None:
+        _apply_boot_disc_label(
+            boot_bin, encode_config.normalize_disc_label(boot_disc_label, "--disc-label"))
 
     for name in list(staging.iterdir()):
         if name.is_dir():
@@ -266,7 +281,8 @@ def main() -> None:
                 player_specialize=not args.generic_player,
                 iso_hold_n=args.iso_hold_n, verify_sp_tail=args.verify_sp_tail,
                 pack_only=args.pack_only, module_only=args.module_only,
-                multipart=args.multipart, disc_label=args.disc_label)
+                multipart=args.multipart, disc_label=args.disc_label,
+                boot_disc_label=args.disc_label)
     finally:
         if previous is None:
             os.environ.pop(marker, None)

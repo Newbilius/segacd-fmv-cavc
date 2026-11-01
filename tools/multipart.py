@@ -383,7 +383,8 @@ def main():
         multipart_build.build(plan, profiles, records, debug=args.debug,
                               region=args.security_region,
                               disc_label=(args.disc_label if args.disc_label is not None
-                                  else profile.data.get("release", {}).get("disc_label")))
+                                  else profile.data.get("release", {}).get("disc_label")),
+                              boot_disc_label=args.disc_label)
     return 0
 
 
