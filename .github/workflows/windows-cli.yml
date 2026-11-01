@@ -349,12 +349,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\tools\cavc.ps1 --workspace-root $workspace --scratch-root $scratch --array-storage disk multipart tmp/windows-ci-smoke/profile.toml --parts 2 --part 1 --device cpu
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $part2Output = .\tools\cavc.ps1 --workspace-root $workspace --scratch-root $scratch --array-storage disk multipart tmp/windows-ci-smoke/profile.toml --parts 2 --part 2 --device cpu 2>&1
-          $part2Exit = $LASTEXITCODE
-          $part2Text = $part2Output -join "`n"
-          $part2Output
-          if ($part2Exit -ne 0) { exit $part2Exit }
-          if ($part2Text -notmatch 'part 1/2: verified completed part reused') { throw 'Second multipart invocation did not reuse the authenticated first part' }
+          $part1Profile = Get-ChildItem -Path 'tmp/profile-multipart2-*/profiles/*-part001.toml' -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $part1Profile) { throw 'First multipart invocation did not create its part profile' }
+          $part1Record = Join-Path (Join-Path 'out' ([IO.Path]::GetFileNameWithoutExtension($part1Profile.Name))) 'multipart-complete.json'
+          if (-not (Test-Path $part1Record)) { throw 'First multipart invocation did not create its completion record' }
+          $part1RecordHash = (Get-FileHash -LiteralPath $part1Record -Algorithm SHA256).Hash
+          .\tools\cavc.ps1 --workspace-root $workspace --scratch-root $scratch --array-storage disk multipart tmp/windows-ci-smoke/profile.toml --parts 2 --part 2 --device cpu
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $part1RecordHashAfter = (Get-FileHash -LiteralPath $part1Record -Algorithm SHA256).Hash
+          if ($part1RecordHashAfter -ne $part1RecordHash) { throw 'Second multipart invocation rebuilt the authenticated first part' }
           $multipartFolder = Get-ChildItem out -Directory -Filter 'profile-multipart2-*' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $multipartFolder) { throw 'CPU multipart conversion did not create its output folder' }
           $manifestPath = Join-Path $multipartFolder.FullName 'multipart_release.json'
