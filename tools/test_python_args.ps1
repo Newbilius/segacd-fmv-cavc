@@ -139,11 +139,12 @@ $savedDevice = [Environment]::GetEnvironmentVariable('CBRSIM_DEVICE', 'Process')
 try {
     $env:CBRSIM_DEVICE = 'launcher-parent-sentinel'
     $doctorOutput = & (Join-Path $PSScriptRoot 'cavc.ps1') doctor 2>&1
-    if (($doctorOutput -join "`n") -notmatch '(?m)^Python: ' -or
-        ($doctorOutput -join "`n") -notmatch '(?m)^workspace: writable ' -or
-        ($doctorOutput -join "`n") -notmatch '(?m)^scratch: writable ' -or
-        ($doctorOutput -join "`n") -match 'unrecognized arguments') {
-        throw 'CAVC doctor did not preserve the action or verify selected storage'
+    $doctorText = $doctorOutput | Out-String
+    if (-not $doctorText.Contains('Python: ') -or
+        -not $doctorText.Contains('workspace: writable ') -or
+        -not $doctorText.Contains('scratch: writable ') -or
+        $doctorText.Contains('unrecognized arguments')) {
+        throw "CAVC doctor did not preserve the action or verify selected storage:`n$doctorText"
     }
     if ($env:CBRSIM_DEVICE -ne 'launcher-parent-sentinel') {
         throw 'CAVC launcher leaked its selected device into the PowerShell session'
