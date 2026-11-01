@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import build_disc
 
@@ -30,8 +31,10 @@ class NativeToolPathTest(unittest.TestCase):
             obj = workspace / "movieplay_sp_ext.o"
             binary = workspace / "movieplay_sp_ext.bin"
 
-            build_disc._assemble(source, obj, [workspace])
-            build_disc._link(obj, linker, binary)
+            with patch.object(build_disc, "_short_windows_native_path",
+                              side_effect=lambda path: os.fspath(path)):
+                build_disc._assemble(source, obj, [workspace])
+                build_disc._link(obj, linker, binary)
 
             self.assertEqual(binary.stat().st_size, 1108)
 

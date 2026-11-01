@@ -687,7 +687,7 @@ def main(argv: list[str] | None = None) -> int:
                 "sar", source_info["video"].get("sample_aspect_ratio", "1:1"))
             if args.fps is None and args.cold_cap is None and not early_timing:
                 source_data["source"]["fps"] = "15"
-                source_data["encoder"]["cold_cap"] = "380"
+                source_data["encoder"]["cold_cap"] = 380
             elif early_timing:
                 source_data["source"]["fps"] = str(early_timing_values["source.fps"])
                 source_data["encoder"]["cold_cap"] = early_timing_values["encoder.cold_cap"]
@@ -817,7 +817,7 @@ def main(argv: list[str] | None = None) -> int:
         fps = (args.fps if args.fps is not None else
                str(early_timing_values["source.fps"]) if early_timing else "15")
         cold_cap = (args.cold_cap if args.cold_cap is not None else
-                    early_timing_values.get("encoder.cold_cap", "380"))
+                    early_timing_values.get("encoder.cold_cap", 380))
         duration = (args.duration if args.duration is not None else
                     source_duration(source_info))
         duration_origin = ("CLI --duration" if args.duration is not None else "FFprobe")

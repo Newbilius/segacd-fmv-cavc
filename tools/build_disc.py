@@ -96,10 +96,85 @@ def _native_m68k_command(
     return translated, native_cwd
 
 
+def _native_m68k_subst_command(
+        command: list[str], cwd: Path) -> tuple[list[str], Path, str]:
+    """Map a Unicode workspace to an ASCII drive when 8.3 names are disabled."""
+
+    paths: list[Path] = []
+    for argument in command:
+        value = argument[2:] if argument.startswith("-I") else argument
+        path = Path(value)
+        if path.is_absolute() and not os.fspath(path).isascii():
+            paths.append(path)
+    if cwd.is_absolute() and not str(cwd).isascii():
+        paths.append(cwd)
+    if not paths:
+        raise RuntimeError("no Unicode paths available for native m68k alias")
+
+    roots: list[Path] = []
+    for path in paths:
+        candidate = path if path.is_dir() else path.parent
+        while not candidate.exists() and candidate.parent != candidate:
+            candidate = candidate.parent
+        roots.append(candidate)
+    try:
+        common = Path(os.path.commonpath([str(root) for root in roots]))
+    except ValueError as exc:
+        raise RuntimeError("Unicode native m68k paths do not share a drive") from exc
+    while not common.is_dir() and common.parent != common:
+        common = common.parent
+    if str(common).isascii():
+        raise RuntimeError(
+            "Unicode native m68k paths have no shared Unicode directory to alias")
+
+    used = ctypes.windll.kernel32.GetLogicalDrives()
+    drive = next((letter for letter in "ZYXWVUTSRQPONMLKJIHGFED"
+                  if not used & (1 << (ord(letter) - ord("A")))), None)
+    if drive is None:
+        raise RuntimeError("no free drive letter for Unicode native m68k paths")
+    subprocess.run(["subst", f"{drive}:", str(common)], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+    def translate(argument: str) -> str:
+        prefix = ""
+        value = argument
+        if argument.startswith("-I") and len(argument) > 2:
+            prefix, value = argument[:2], argument[2:]
+        path = Path(value)
+        if not path.is_absolute():
+            return argument
+        try:
+            relative = path.relative_to(common)
+        except ValueError:
+            return argument
+        mapped = Path(f"{drive}:\\") / relative
+        return prefix + str(mapped)
+
+    translated = [translate(argument) for argument in command]
+    native_cwd = Path(translate(str(cwd)))
+    if any(not value.isascii() for value in translated) or not str(native_cwd).isascii():
+        subprocess.run(["subst", f"{drive}:", "/d"], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        raise RuntimeError(
+            "Unicode native m68k paths span unrelated directories and cannot be aliased")
+    return translated, native_cwd, drive
+
+
 def run(command: list[str], *, cwd: Path = ROOT) -> None:
-    command, cwd = _native_m68k_command(command, cwd)
-    print("$ " + subprocess.list2cmdline(command), flush=True)
-    subprocess.run(command, cwd=cwd, check=True)
+    original_command, original_cwd = command, cwd
+    alias_drive = None
+    try:
+        try:
+            command, cwd = _native_m68k_command(command, cwd)
+        except RuntimeError:
+            command, cwd, alias_drive = _native_m68k_subst_command(
+                original_command, original_cwd)
+        print("$ " + subprocess.list2cmdline(command), flush=True)
+        subprocess.run(command, cwd=cwd, check=True)
+    finally:
+        if alias_drive is not None:
+            subprocess.run(["subst", f"{alias_drive}:", "/d"], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _assemble(source: Path, obj: Path, includes: list[Path], defines: list[str] = ()) -> None:
