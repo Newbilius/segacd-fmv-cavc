@@ -1042,8 +1042,19 @@ stream_loop:
 4:
 	tst.w	(COMCMD0).l
 	beq.s	5f				/* let Main and the next frame proceed immediately */
+	tst.w	(COMCMD1).l
+	beq.s	6f
+	/* The previous wave writer already applied its 390-cycle register guard.
+	   This handoff adds cycles before disable; resume waits through a VBlank
+	   and the next audio refill before another RF5C register access. */
+	move.b	#0x40, (PCM_CTRL).l		/* pause RF5C164 master output; keep channel address */
+7:
 	bsr	pump_poll_core
-	bra	4b
+	tst.w	(COMCMD1).l
+	bne.s	7b
+6:
+	bsr	pump_poll_core
+	bra.s	4b
 5:
 	move.w	#0, (COMSTAT0).l
 .if ISO_HOLD_N

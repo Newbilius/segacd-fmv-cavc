@@ -1383,6 +1383,8 @@
 #       bounded ISO reads and checked loader memory ownership.
 # p159: Keep the DEBUG PrgBuf minimum counter allocated for every instrumented
 #       build path; direct 15fps reporting and the legacy fallback share it.
-date=20261031
+# p160: Pause and resume on A/B/C/START at a frame boundary while preserving
+#       the RF5C164 sample phase and continuous CDC service.
+date=20261101
 e=195
-p=159
+p=160

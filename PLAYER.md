@@ -30,6 +30,13 @@ unchanged; the late frame has already given the reader the extra physical time
 that the compensating display step consumes. This prevents isolated display
 misses from becoming permanent reader lead and filling the APPLY queue.
 
+**Pause and resume.** Press A, B, C, or START on controller 1 to toggle
+playback pause. Main accepts the press at a completed frame handoff and holds
+that displayed frame. While paused, Sub keeps servicing the continuous CDC
+reader and disables RF5C164 output through its master-enable bit, preserving
+the channel's wave cursor; frame service enables output again as it writes the
+next audio chunk after resume.
+
 ## Unallocated Space Summary
 
 These are the only ranges with no live owner data. Guards, reserves, and
@@ -525,6 +532,11 @@ debtとして数え、後の名目3 VBlank display stepを2へ短縮する場合
 変えません。遅れたframeがreaderへ追加の物理時間をすでに与えており、補償display stepは
 その時間を消費します。これにより、単発のdisplay missが恒久的なreader leadとなって
 APPLY queueを満たすことを防ぎます。
+
+**一時停止と再開。** controller 1のA/B/C/STARTで再生をtoggleします。Mainはframe
+handoff完了時に入力を受け付け、表示中のframeを保持します。一時停止中もSubはcontinuous
+CDC readerをserviceし、RF5C164のmaster-enableを解除してchannelのwave cursorを保持します。
+再開後、次のaudio chunkを書き込むframe処理でoutputを再度有効にします。
 
 ## 未割当領域の要約
 

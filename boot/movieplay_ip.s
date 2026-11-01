@@ -39,6 +39,8 @@
 .equ GA_COMSTAT1, 0x00A12022
 .equ GA_COMSTAT2, 0x00A12024
 .equ GA_STOPWATCH, 0x00A1200C		/* 12-bit, 30.72 us/tick, Main read-only */
+.equ PAD1_DATA,   0x00A10003
+.equ PAD1_CTRL,   0x00A10009
 
 .equ PROBE_BANK, 0x00200000
 .equ O_NRUN_OFF, 0x0000
@@ -576,6 +578,9 @@ ip_entry:
 	clr.l	frame_no
 	clr.w	started
 	clr.w	swap_request_pending		/* .bss is not cleared; no startup request is pending */
+	clr.w	pause_active
+	clr.w	pad1_previous
+	move.b	#0x40, (PAD1_CTRL).l		/* three-button pad: TH is output */
 	clr.w	vsync_acc			/* v4: ペーシングカウンタ初期化(.bssはMD上でクリアされない) */
 	move.l	#PALIDX_RAM, palidx_ptr		/* ip_entry冒頭でも設定済み(防御的) */
 	bsr	prime_fixed_cadence		/* frame0 has no preceding movie flip */
@@ -2139,6 +2144,10 @@ swap_finish_or_end:
 	bne	1b
 2:
 	move.w	d0, d3				/* preserve READY/END across cadence polling */
+	cmp.w	#STAT_READY, d3
+	bne.s	2f
+	bsr	pause_gate			/* frame is stable; Sub keeps servicing CDC */
+2:
 .ifdef DEBUG
 	move.w	(VDP_HV).l, d2
 	lsr.w	#8, d2
@@ -2152,6 +2161,62 @@ swap_finish_or_end:
 	bne	3b
 	clr.w	swap_request_pending
 	move.w	d3, d0				/* swap_finish_or_end return contract */
+	rts
+
+/* Toggle playback at a completed frame boundary. The Sub CPU keeps its
+   continuous CDC pump alive while COMCMD0 remains asserted. Any newly pressed
+   A/B/C/START button toggles the pause state. */
+pause_gate:
+	bsr	read_pad1_action
+	tst.w	d0
+	beq.s	2f
+	eori.w	#1, pause_active
+	beq.s	1f
+	move.w	#1, (GA_COMCMD1).l		/* Sub pauses PCM while keeping CDC service */
+2:
+	tst.w	pause_active
+	beq.s	3f
+	bsr	wait_vblank
+	bsr	read_pad1_action
+	tst.w	d0
+	beq.s	2b
+	clr.w	pause_active
+1:
+	clr.w	(GA_COMCMD1).l
+3:
+	rts
+
+/* Return nonzero on a newly pressed action button. B/C are exposed with TH
+   high on bits 4/5; A/START use those same bits with TH low (active low). */
+read_pad1_action:
+	move.w	d1, -(sp)
+	move.b	#0x40, (PAD1_DATA).l
+	nop
+	nop
+	nop
+	nop
+	moveq	#0, d1
+	move.b	(PAD1_DATA).l, d1
+	eori.w	#0x0030, d1
+	andi.w	#0x0030, d1
+	lsr.w	#4, d1				/* B -> bit 0, C -> bit 1 */
+	move.b	#0x00, (PAD1_DATA).l
+	nop
+	nop
+	nop
+	nop
+	moveq	#0, d0
+	move.b	(PAD1_DATA).l, d0
+	eori.w	#0x0030, d0
+	andi.w	#0x0030, d0
+	lsr.w	#2, d0				/* A -> bit 2, START -> bit 3 */
+	or.w	d1, d0
+	move.w	d0, d1
+	move.w	pad1_previous, d0
+	eor.w	d1, d0
+	and.w	d1, d0
+	move.w	d1, pad1_previous
+	move.w	(sp)+, d1
 	rts
 
 	/* Display the player-only frame -1 while frame 0 is built. Clear the single
@@ -2569,6 +2634,10 @@ started:
 	.space 2
 swap_request_pending:
 	.space 2				/* CMD_SWAP is asserted; finish it at the next loop head */
+pause_active:
+	.space 2
+pad1_previous:
+	.space 2
 n_runs:
 	.space 2
 frame_type:

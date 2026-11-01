@@ -37,6 +37,12 @@ on each replay. The header retains its rounded base delta, and source samples,
 chunk sizes and control fields retain their layout. Short movies keep fixed
 frequency. Each frequency-register write observes the 384-cycle spacing.
 
+During user pause, the player clears the RF5C164 master sound-enable bit while
+keeping channel 0 selected. This stops output without resetting or advancing
+the wave cursor; resume enables output again with the current frequency delta
+still intact when it writes the next audio chunk. The Sub CPU continues CDC
+service while Main holds the displayed frame.
+
 The encoder and independent reference decoder are in `tools/ima_adpcm.py`.
 `tools/pack_stream.py --verify` reconstructs every audio chunk and proves that
 the startup prefix plus shifted controls reproduce the source chunk order for
@@ -203,6 +209,11 @@ mux済み音声には、cleanなsigned-16 source WAVではなく、RF5C164の8-b
 復元されたIMA信号が入ります。Preview WAVはsource-video frameごとに1 decode chunkの
 時間で作られます。物理playerはheaderのRF5C164 frequency deltaと実際のNTSC playback
 cadenceを使います。
+
+user pause中はchannel 0を選択したままRF5C164のmaster sound-enable bitを解除します。
+sample addressをrestartまたはadvanceせずにoutputを停止し、再開時は保持したfrequency
+deltaのまま次のaudio chunkを書き込む時にoutputを再度有効にします。Mainが表示中のframeを
+保持する間もSub CPUはCDC serviceを続けます。
 
 ## Sub PRG-RAM lookup table
 
