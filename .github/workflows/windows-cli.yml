@@ -130,12 +130,23 @@ jobs:
       - name: Install pinned FFmpeg and 7-Zip
         shell: pwsh
         run: |
-          winget install --id 7zip.7zip --exact --source winget --version 26.02 --accept-source-agreements --accept-package-agreements
-          if ($LASTEXITCODE -ne 0) { throw "7-Zip installation failed: $LASTEXITCODE" }
-          winget install --id Gyan.FFmpeg --exact --source winget --version 8.1.2 --accept-source-agreements --accept-package-agreements
-          if ($LASTEXITCODE -ne 0) { throw "FFmpeg installation failed: $LASTEXITCODE" }
-          $ffmpeg = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Microsoft/WinGet/Packages/Gyan.FFmpeg_*') -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
-          if (-not $ffmpeg) { throw 'Pinned Gyan FFmpeg package did not install ffmpeg.exe' }
+          $toolsRoot = Join-Path $env:RUNNER_TEMP 'cavc-external-tools'
+          New-Item -ItemType Directory -Force $toolsRoot | Out-Null
+          $sevenZipInstaller = Join-Path $toolsRoot '7z2602-x64.exe'
+          Invoke-WebRequest -Uri 'https://github.com/ip7z/7zip/releases/download/26.02/7z2602-x64.exe' -OutFile $sevenZipInstaller
+          $sevenZipHash = (Get-FileHash -LiteralPath $sevenZipInstaller -Algorithm SHA256).Hash
+          if ($sevenZipHash -ne '6745FA76DC2EA031596D8678F6F6B99C3C1B435B4164A63485ADBBC7B8D82EF0') { throw "7-Zip installer SHA-256 mismatch: $sevenZipHash" }
+          $sevenZipRoot = Join-Path $toolsRoot '7-Zip'
+          $sevenZipInstall = Start-Process -FilePath $sevenZipInstaller -ArgumentList @('/S', "/D=$sevenZipRoot") -Wait -PassThru
+          if ($sevenZipInstall.ExitCode -ne 0) { throw "7-Zip installation failed: $($sevenZipInstall.ExitCode)" }
+          $ffmpegArchive = Join-Path $toolsRoot 'ffmpeg-8.1.2-full_build.zip'
+          Invoke-WebRequest -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-full_build.zip' -OutFile $ffmpegArchive
+          $ffmpegHash = (Get-FileHash -LiteralPath $ffmpegArchive -Algorithm SHA256).Hash
+          if ($ffmpegHash -ne 'B8CDEFAB5F50590A076C27C2B56B0294A0E6154FADED28BA1BA05EBC4F801F57') { throw "FFmpeg archive SHA-256 mismatch: $ffmpegHash" }
+          $ffmpegRoot = Join-Path $toolsRoot 'ffmpeg'
+          Expand-Archive -LiteralPath $ffmpegArchive -DestinationPath $ffmpegRoot
+          $ffmpeg = Get-ChildItem -Path $ffmpegRoot -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
+          if (-not $ffmpeg) { throw 'Pinned Gyan FFmpeg archive did not contain ffmpeg.exe' }
           $ffprobe = Join-Path $ffmpeg.DirectoryName 'ffprobe.exe'
           if (-not (Test-Path $ffprobe)) { throw 'Pinned Gyan FFmpeg package did not install ffprobe.exe' }
           $ffmpegVersion = (& $ffmpeg.FullName -version | Select-Object -First 1)
@@ -143,6 +154,7 @@ jobs:
           $ffprobeVersion = (& $ffprobe -version | Select-Object -First 1)
           if ($LASTEXITCODE -ne 0 -or $ffprobeVersion -notmatch '^ffprobe version 8\.1\.2') { throw "Unexpected FFprobe version: $ffprobeVersion" }
           $ffmpeg.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $sevenZipRoot | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Bootstrap pinned CPU environment
         shell: pwsh
         run: .\tools\bootstrap_python.ps1 --cpu
@@ -241,12 +253,23 @@ jobs:
       - name: Install pinned FFmpeg and 7-Zip
         shell: pwsh
         run: |
-          winget install --id 7zip.7zip --exact --source winget --version 26.02 --accept-source-agreements --accept-package-agreements
-          if ($LASTEXITCODE -ne 0) { throw "7-Zip installation failed: $LASTEXITCODE" }
-          winget install --id Gyan.FFmpeg --exact --source winget --version 8.1.2 --accept-source-agreements --accept-package-agreements
-          if ($LASTEXITCODE -ne 0) { throw "FFmpeg installation failed: $LASTEXITCODE" }
-          $ffmpeg = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Microsoft/WinGet/Packages/Gyan.FFmpeg_*') -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
-          if (-not $ffmpeg) { throw 'Pinned Gyan FFmpeg package did not install ffmpeg.exe' }
+          $toolsRoot = Join-Path $env:RUNNER_TEMP 'cavc-external-tools'
+          New-Item -ItemType Directory -Force $toolsRoot | Out-Null
+          $sevenZipInstaller = Join-Path $toolsRoot '7z2602-x64.exe'
+          Invoke-WebRequest -Uri 'https://github.com/ip7z/7zip/releases/download/26.02/7z2602-x64.exe' -OutFile $sevenZipInstaller
+          $sevenZipHash = (Get-FileHash -LiteralPath $sevenZipInstaller -Algorithm SHA256).Hash
+          if ($sevenZipHash -ne '6745FA76DC2EA031596D8678F6F6B99C3C1B435B4164A63485ADBBC7B8D82EF0') { throw "7-Zip installer SHA-256 mismatch: $sevenZipHash" }
+          $sevenZipRoot = Join-Path $toolsRoot '7-Zip'
+          $sevenZipInstall = Start-Process -FilePath $sevenZipInstaller -ArgumentList @('/S', "/D=$sevenZipRoot") -Wait -PassThru
+          if ($sevenZipInstall.ExitCode -ne 0) { throw "7-Zip installation failed: $($sevenZipInstall.ExitCode)" }
+          $ffmpegArchive = Join-Path $toolsRoot 'ffmpeg-8.1.2-full_build.zip'
+          Invoke-WebRequest -Uri 'https://github.com/GyanD/codexffmpeg/releases/download/8.1.2/ffmpeg-8.1.2-full_build.zip' -OutFile $ffmpegArchive
+          $ffmpegHash = (Get-FileHash -LiteralPath $ffmpegArchive -Algorithm SHA256).Hash
+          if ($ffmpegHash -ne 'B8CDEFAB5F50590A076C27C2B56B0294A0E6154FADED28BA1BA05EBC4F801F57') { throw "FFmpeg archive SHA-256 mismatch: $ffmpegHash" }
+          $ffmpegRoot = Join-Path $toolsRoot 'ffmpeg'
+          Expand-Archive -LiteralPath $ffmpegArchive -DestinationPath $ffmpegRoot
+          $ffmpeg = Get-ChildItem -Path $ffmpegRoot -Filter ffmpeg.exe -File -Recurse | Select-Object -First 1
+          if (-not $ffmpeg) { throw 'Pinned Gyan FFmpeg archive did not contain ffmpeg.exe' }
           $ffprobe = Join-Path $ffmpeg.DirectoryName 'ffprobe.exe'
           if (-not (Test-Path $ffprobe)) { throw 'Pinned Gyan FFmpeg package did not install ffprobe.exe' }
           $ffmpegVersion = (& $ffmpeg.FullName -version | Select-Object -First 1)
@@ -254,6 +277,7 @@ jobs:
           $ffprobeVersion = (& $ffprobe -version | Select-Object -First 1)
           if ($LASTEXITCODE -ne 0 -or $ffprobeVersion -notmatch '^ffprobe version 8\.1\.2') { throw "Unexpected FFprobe version: $ffprobeVersion" }
           $ffmpeg.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $sevenZipRoot | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Check bootstrap preserves the caller environment
         shell: pwsh
         run: |
